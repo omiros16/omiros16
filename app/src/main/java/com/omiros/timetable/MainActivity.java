@@ -61,12 +61,16 @@ public class MainActivity extends Activity {
     private final Runnable ticker = new Runnable() {
         @Override
         public void run() {
-            render();
+            int now = nowSlot();
+            LocalDate today = LocalDate.now();
+            if (now != lastNowSlot || !today.equals(lastToday)) render();
             handler.postDelayed(this, 30_000);
         }
     };
 
     private DayStore store;
+    private int lastNowSlot = -2;
+    private LocalDate lastToday;
     private LocalDate date;
     private DayStore.Day day;
 
@@ -94,7 +98,7 @@ public class MainActivity extends Activity {
         date = saved != null ? LocalDate.parse(saved) : LocalDate.now();
         setContentView(buildUi());
         showDate(date, true);
-        if (savedInstanceState == null && store.notificationsDefault() && !hasNotificationPermission()) {
+        if (savedInstanceState == null && store.notificationsOn() && !hasNotificationPermission()) {
             requestNotificationPermission();
         }
     }
@@ -355,16 +359,18 @@ public class MainActivity extends Activity {
 
     private void render() {
         LocalDate today = LocalDate.now();
+        lastToday = today;
+        lastNowSlot = nowSlot();
         titleView.setText(capitalize(date.format(TITLE_FMT)));
         subtitleView.setText(relativeLabel(date, today));
         styleChip(todayChip, date.equals(today));
         styleChip(tomorrowChip, date.equals(today.plusDays(1)));
 
-        boolean notif = store.notificationsOn(date);
+        boolean notif = store.notificationsOn();
         bell.setImageResource(notif ? R.drawable.ic_bell : R.drawable.ic_bell_off);
         bell.setImageTintList(ColorStateList.valueOf(notif ? ACCENT : DIM));
 
-        boolean tomorrowEmpty = date.equals(today) && store.load(today.plusDays(1)).isEmpty();
+        boolean tomorrowEmpty = date.equals(today) && !store.hasPlan(today.plusDays(1));
         banner.setVisibility(tomorrowEmpty && LocalTime.now().getHour() >= 18 ? View.VISIBLE : View.GONE);
 
         int now = nowSlot();
@@ -471,13 +477,11 @@ public class MainActivity extends Activity {
     }
 
     private void toggleNotifications() {
-        boolean on = !store.notificationsOn(date);
-        store.setNotifications(date, on);
+        boolean on = !store.notificationsOn();
+        store.setNotificationsOn(on);
         Reminders.reschedule(this);
         render();
-        String when = relativeLabel(date, LocalDate.now());
-        if (!when.equals("Σήμερα") && !when.equals("Αύριο")) when = date.format(SHORT_FMT);
-        toast(on ? "Ειδοποιήσεις ενεργές · " + when : "Χωρίς ειδοποιήσεις · " + when);
+        toast(on ? "Ειδοποιήσεις ενεργές" : "Ειδοποιήσεις απενεργοποιημένες");
         if (on && !hasNotificationPermission()) requestNotificationPermission();
     }
 
@@ -700,7 +704,6 @@ public class MainActivity extends Activity {
         m.add(0, 2, 1, "Αντιγραφή από ημερομηνία…");
         m.add(0, 3, 2, "Μηδενισμός ✓ / ✕");
         m.add(0, 4, 3, "Καθαρισμός ημέρας");
-        m.add(0, 5, 4, "Ειδοποιήσεις σε νέες μέρες").setCheckable(true).setChecked(store.notificationsDefault());
         pm.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
             @Override
             public boolean onMenuItemClick(MenuItem item) {
@@ -723,15 +726,6 @@ public class MainActivity extends Activity {
                                 persist();
                             }
                         });
-                        return true;
-                    case 5:
-                        boolean on = !store.notificationsDefault();
-                        store.setNotificationsDefault(on);
-                        Reminders.reschedule(MainActivity.this);
-                        render();
-                        toast(on ? "Οι νέες μέρες θα έχουν ειδοποιήσεις"
-                                : "Οι νέες μέρες δεν θα έχουν ειδοποιήσεις (ανοίγεις με το καμπανάκι)");
-                        if (on && !hasNotificationPermission()) requestNotificationPermission();
                         return true;
                 }
                 return false;

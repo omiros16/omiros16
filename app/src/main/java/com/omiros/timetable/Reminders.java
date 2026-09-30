@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 
 /**
- * Keeps exactly one alarm armed: the start of the next block, on a day whose notifications are on.
+ * Keeps exactly one alarm armed: the start of the next block (today or tomorrow), while notifications are on.
  * Each firing posts its notification and arms the following one.
  */
 final class Reminders {
@@ -31,9 +31,12 @@ final class Reminders {
         DayStore store = new DayStore(context);
         LocalDateTime now = LocalDateTime.now();
         LocalDate today = now.toLocalDate();
+        if (!store.notificationsOn()) {
+            am.cancel(alarmIntent(context, today, 0));
+            return;
+        }
 
         for (LocalDate d = today; !d.isAfter(today.plusDays(1)); d = d.plusDays(1)) {
-            if (!store.notificationsOn(d)) continue;
             DayStore.Day day = store.load(d);
             for (int i = 0; i < DayStore.SLOTS; i++) {
                 if (!isBlockStart(day, i)) continue;
@@ -60,7 +63,7 @@ final class Reminders {
             LocalDate d = LocalDate.parse(date);
             DayStore store = new DayStore(context);
             DayStore.Day day = store.load(d);
-            if (store.notificationsOn(d) && isBlockStart(day, slot)) {
+            if (store.notificationsOn() && isBlockStart(day, slot)) {
                 int end = slot + 1;
                 while (end < DayStore.SLOTS && day.text[slot].equals(day.text[end])) end++;
                 notify(context, day.text[slot], DayStore.formatMin(DayStore.slotStart(slot))
