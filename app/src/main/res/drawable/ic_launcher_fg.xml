@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108x108 adaptive icon foreground: a column of 15-minute boxes, first ones filled. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFF6A00" android:pathData="M31,31h5v8h-5z M31,44h5v8h-5z M31,57h5v8h-5z M31,70h5v8h-5z" />
+    <path android:fillColor="#FFFF6A00" android:pathData="M42,33a2,2 0 0 1 2,-2h31a2,2 0 0 1 2,2v4a2,2 0 0 1 -2,2h-31a2,2 0 0 1 -2,-2z" />
+    <path android:fillColor="#FFFF6A00" android:pathData="M42,46a2,2 0 0 1 2,-2h31a2,2 0 0 1 2,2v4a2,2 0 0 1 -2,2h-31a2,2 0 0 1 -2,-2z" />
+    <path android:fillColor="#66FFFFFF" android:pathData="M42,59a2,2 0 0 1 2,-2h31a2,2 0 0 1 2,2v4a2,2 0 0 1 -2,2h-31a2,2 0 0 1 -2,-2z" />
+    <path android:fillColor="#66FFFFFF" android:pathData="M42,72a2,2 0 0 1 2,-2h31a2,2 0 0 1 2,2v4a2,2 0 0 1 -2,2h-31a2,2 0 0 1 -2,-2z" />
+</vector>
