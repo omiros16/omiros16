@@ -10,6 +10,7 @@ import org.json.JSONObject;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /** Persists one plan per date in SharedPreferences, as JSON keyed by ISO date. */
 final class DayStore {
@@ -97,6 +98,31 @@ final class DayStore {
         list.add(0, text);
         while (list.size() > MAX_RECENT) list.remove(list.size() - 1);
         prefs.edit().putString("_recent", new JSONArray(list).toString()).apply();
+    }
+
+    /** Notifications for a day follow the default unless toggled for that specific day. */
+    boolean notificationsOn(LocalDate date) {
+        return prefs.getBoolean("_notif_" + date, notificationsDefault());
+    }
+
+    void setNotifications(LocalDate date, boolean on) {
+        prefs.edit().putBoolean("_notif_" + date, on).apply();
+    }
+
+    boolean notificationsDefault() {
+        return prefs.getBoolean("_notif_default", true);
+    }
+
+    void setNotificationsDefault(boolean on) {
+        prefs.edit().putBoolean("_notif_default", on).apply();
+    }
+
+    static int slotStart(int i) {
+        return START_MIN + i * SLOT_MIN;
+    }
+
+    static String formatMin(int m) {
+        return String.format(Locale.ROOT, "%02d:%02d", m / 60, m % 60);
     }
 
     void removeRecent(String text) {
