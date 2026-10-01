@@ -16,9 +16,10 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 
 /**
  * Persists one month per small JSON file (files/months/YYYY-MM.json): that month's habits and the
@@ -26,6 +27,9 @@ import java.util.Map;
  * removing a habit changes only the current month while earlier months keep what they had.
  * A month without a file starts from the latest earlier month's habits with nothing ticked,
  * which is the monthly reset.
+ *
+ * Each file is read at most once and then kept in memory (a few hundred bytes a month), so drawing
+ * the screen and working out streaks costs the same after years of use as in the first week.
  */
 final class MonthStore {
     static final int MAX_HABITS = 6;
@@ -33,6 +37,10 @@ final class MonthStore {
 
     private final File dir;
     private final SharedPreferences settings;
+    /** Months that have a file, as read or last saved. The same object is handed out every time. */
+    private final Map<YearMonth, Month> cache = new HashMap<>();
+    /** Months that have a file, listed from disk once. */
+    private TreeSet<YearMonth> stored;
 
     MonthStore(Context context) {
         dir = new File(context.getFilesDir(), "months");
@@ -45,6 +53,8 @@ final class MonthStore {
         String name;
         /** Bit d-1 is set when the habit was done on day d. */
         int days;
+        /** First day of the month the habit counts from: the day it was added, or 1. */
+        int since = 1;
 
         Habit(int id, String name) {
             this.id = id;
@@ -56,8 +66,13 @@ final class MonthStore {
         }
 
         void setDone(int day, boolean done) {
-            if (done) days |= 1 << (day - 1);
-            else days &= ~(1 << (day - 1));
+            if (done) {
+                days |= 1 << (day - 1);
+                // Ticking a day before the habit was added means it was already going then.
+                since = Math.min(since, day);
+            } else {
+                days &= ~(1 << (day - 1));
+            }
         }
 
         int count() {
@@ -86,19 +101,30 @@ final class MonthStore {
             return n;
         }
 
-        /** Share of the possible ticks over the first {@code elapsedDays} days, 0–100. */
+        /**
+         * Share of the possible ticks over the first {@code elapsedDays} days, 0–100. A habit added
+         * mid-month only counts the days since it was added.
+         */
         int percent(int elapsedDays) {
-            int possible = habits.size() * elapsedDays;
-            if (possible == 0) return 0;
+            int possible = 0;
             int done = 0;
             int mask = elapsedDays >= 31 ? -1 : (1 << elapsedDays) - 1;
-            for (Habit h : habits) done += Integer.bitCount(h.days & mask);
-            return Math.round(done * 100f / possible);
+            for (Habit h : habits) {
+                possible += Math.max(0, elapsedDays - h.since + 1);
+                done += Integer.bitCount(h.days & mask);
+            }
+            if (possible == 0) return 0;
+            return Math.min(100, Math.round(done * 100f / possible));
         }
     }
 
+    /**
+     * The month's habits and ticks. A month with a file is always the same object, so changing it
+     * and calling {@link #save} keeps every holder in step. A month without one is rebuilt from the
+     * latest earlier month each time (cheap, that month is in memory), so it can never go stale.
+     */
     Month load(YearMonth ym) {
-        Month m = read(ym);
+        Month m = own(ym);
         if (m != null) return m;
         m = new Month(ym);
         Month prev = latestBefore(ym);
@@ -110,6 +136,7 @@ final class MonthStore {
 
     /** Writes the month even when it has no habits left, so it does not inherit them again. */
     void save(Month m) {
+        cache.put(m.ym, m);
         try {
             JSONArray habits = new JSONArray();
             for (Habit h : m.habits) {
@@ -117,17 +144,18 @@ final class MonthStore {
                 for (int d = 1; d <= 31; d++) {
                     if (h.isDone(d)) days.put(d);
                 }
-                habits.put(new JSONObject().put("id", h.id).put("name", h.name).put("days", days));
+                JSONObject o = new JSONObject().put("id", h.id).put("name", h.name).put("days", days);
+                if (h.since > 1) o.put("since", h.since);
+                habits.put(o);
             }
-            write(file(m.ym), new JSONObject().put("habits", habits).toString());
+            if (write(file(m.ym), new JSONObject().put("habits", habits).toString())) stored().add(m.ym);
         } catch (JSONException ignored) {
         }
     }
 
     /** Earliest month with saved data, or null before anything has been saved. */
     YearMonth earliest() {
-        List<YearMonth> all = stored();
-        return all.isEmpty() ? null : all.get(0);
+        return stored().isEmpty() ? null : stored().first();
     }
 
     /** True if the month has its own file (it was used), as opposed to only inheriting habits. */
@@ -137,61 +165,71 @@ final class MonthStore {
 
     int nextId() {
         int id = settings.getInt("next_id", 1);
-        settings.edit().putInt("next_id", id + 1).apply();
+        // Written straight away: losing it to a crash would hand the same id out twice.
+        settings.edit().putInt("next_id", id + 1).commit();
         return id;
     }
 
     /**
      * Days in a row the habit was done, ending today, or ending yesterday while today is not ticked
-     * yet. {@code cache} holds the months already read (seed it with the shown month).
+     * yet. {@code current} is today's month as shown, which may not have a file yet.
      */
-    int streak(int habitId, LocalDate today, Map<YearMonth, Month> cache) {
-        LocalDate d = isDone(habitId, today, cache) ? today : today.minusDays(1);
+    int streak(int habitId, LocalDate today, Month current) {
+        Habit h = current.find(habitId);
+        if (h == null) return 0;
+        YearMonth ym = current.ym;
+        int day = today.getDayOfMonth();
+        if (!h.isDone(day)) day--;
         int n = 0;
-        while (n < 3660 && isDone(habitId, d, cache)) {
-            n++;
-            d = d.minusDays(1);
+        // A whole month at a time: count the run of ticks ending at `day`, and only if it reaches
+        // the 1st go on to the end of the month before.
+        while (n < 3660) {
+            if (day == 0) {
+                ym = ym.minusMonths(1);
+                h = load(ym).find(habitId);
+                if (h == null) break;
+                day = ym.lengthOfMonth();
+            }
+            int run = Math.min(day, Integer.numberOfLeadingZeros(~(h.days << (32 - day))));
+            n += run;
+            if (run < day) break;
+            day = 0;
         }
         return n;
     }
 
-    private boolean isDone(int habitId, LocalDate date, Map<YearMonth, Month> cache) {
-        YearMonth ym = YearMonth.from(date);
-        Month m = cache.get(ym);
-        if (m == null) {
-            m = load(ym);
-            cache.put(ym, m);
-        }
-        Habit h = m.find(habitId);
-        return h != null && h.isDone(date.getDayOfMonth());
-    }
-
     private Month latestBefore(YearMonth ym) {
-        List<YearMonth> all = stored();
-        for (int i = all.size() - 1; i >= 0; i--) {
-            if (all.get(i).isBefore(ym)) {
-                Month m = read(all.get(i));
-                if (m != null) return m;
-            }
+        for (YearMonth s = stored().lower(ym); s != null; s = stored().lower(s)) {
+            Month m = own(s);
+            if (m != null) return m;
         }
         return null;
     }
 
-    private List<YearMonth> stored() {
-        List<YearMonth> out = new ArrayList<>();
+    /** The month's own data from memory or its file, or null if it has none (or it cannot be read). */
+    private Month own(YearMonth ym) {
+        Month m = cache.get(ym);
+        if (m == null && stored().contains(ym)) {
+            m = read(ym);
+            if (m != null) cache.put(ym, m);
+        }
+        return m;
+    }
+
+    private TreeSet<YearMonth> stored() {
+        if (stored != null) return stored;
+        stored = new TreeSet<>();
         String[] names = dir.list();
-        if (names == null) return out;
+        if (names == null) return stored;
         for (String n : names) {
             // A ".bak" left by an interrupted write is restored by AtomicFile on the next read.
             if (n.length() < 7 || !(n.endsWith(".json") || n.endsWith(".json.bak"))) continue;
             try {
-                YearMonth ym = YearMonth.parse(n.substring(0, 7));
-                if (!out.contains(ym)) out.add(ym);
+                stored.add(YearMonth.parse(n.substring(0, 7)));
             } catch (DateTimeParseException ignored) {
             }
         }
-        Collections.sort(out);
-        return out;
+        return stored;
     }
 
     private AtomicFile file(YearMonth ym) {
@@ -207,6 +245,7 @@ final class MonthStore {
             for (int i = 0; i < habits.length(); i++) {
                 JSONObject o = habits.getJSONObject(i);
                 Habit h = new Habit(o.getInt("id"), o.getString("name"));
+                h.since = Math.max(1, o.optInt("since", 1));
                 JSONArray days = o.optJSONArray("days");
                 for (int k = 0; days != null && k < days.length(); k++) {
                     int d = days.getInt(k);
@@ -220,15 +259,17 @@ final class MonthStore {
         }
     }
 
-    private void write(AtomicFile f, String json) {
+    private boolean write(AtomicFile f, String json) {
         dir.mkdirs();
         FileOutputStream out = null;
         try {
             out = f.startWrite();
             out.write(json.getBytes(StandardCharsets.UTF_8));
             f.finishWrite(out);
+            return true;
         } catch (IOException e) {
             if (out != null) f.failWrite(out);
+            return false;
         }
     }
 }

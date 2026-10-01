@@ -7,13 +7,17 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.view.View;
 
-/** One dot per day of the month: filled when done, a ring for today, small for days still ahead. */
+/**
+ * One dot per day of the month: filled when done, a ring for today, small for days still ahead
+ * and for days before the habit was added.
+ */
 final class DotStrip extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
     private int days = 30;
     private int doneBits;
     private int today;
+    private int since = 1;
 
     DotStrip(Context context) {
         super(context);
@@ -22,11 +26,16 @@ final class DotStrip extends View {
         ring.setStrokeWidth(1.5f * density());
     }
 
-    /** {@code today} is the 1-based day of the month; days after it are drawn as still ahead. */
-    void set(int days, int doneBits, int today) {
+    /**
+     * {@code today} is the 1-based day of the month; days after it are drawn as still ahead.
+     * {@code since} is the day the habit was added.
+     */
+    void set(int days, int doneBits, int today, int since) {
+        if (days == this.days && doneBits == this.doneBits && today == this.today && since == this.since) return;
         this.days = days;
         this.doneBits = doneBits;
         this.today = today;
+        this.since = since;
         invalidate();
     }
 
@@ -46,7 +55,7 @@ final class DotStrip extends View {
                 canvas.drawCircle(cx, cy, r - ring.getStrokeWidth() / 2, ring);
             } else {
                 fill.setColor(FAINT);
-                canvas.drawCircle(cx, cy, d < today ? r : r * 0.45f, fill);
+                canvas.drawCircle(cx, cy, d < today && d >= since ? r : r * 0.45f, fill);
             }
         }
     }

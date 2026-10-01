@@ -43,8 +43,6 @@ import android.widget.TextView;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 
 public class MainActivity extends Activity {
     private static final String[] MONTHS = {"Ιανουάριος", "Φεβρουάριος", "Μάρτιος", "Απρίλιος", "Μάιος",
@@ -78,7 +76,20 @@ public class MainActivity extends Activity {
     private TextView statusView;
     private LinearLayout bar;
     private LinearLayout list;
-    private final SparseArray<View> checkViews = new SparseArray<>();
+    /** The cards on screen, by habit id, so a tick updates one card in place instead of rebuilding. */
+    private final SparseArray<CardViews> cards = new SparseArray<>();
+
+    private static final Typeface MEDIUM = Typeface.create("sans-serif-medium", Typeface.NORMAL);
+
+    /** The parts of a habit card that change when it is ticked. */
+    private static final class CardViews {
+        View card;
+        GradientDrawable background;
+        ImageView check;
+        GradientDrawable checkCircle;
+        TextView meta;
+        DotStrip strip;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -141,9 +152,9 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- UI construction
 
     private View buildUi() {
+        // No background of its own: the window's is the same colour, and drawing it twice costs every frame.
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BG);
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
@@ -229,7 +240,54 @@ public class MainActivity extends Activity {
         render();
     }
 
+    /** Rebuilds the whole screen: after a change of month, day or habit list. */
     private void render() {
+        renderHeader();
+        boolean current = isCurrent();
+        int n = month.habits.size();
+
+        list.removeAllViews();
+        cards.clear();
+        if (current) addLastMonthBanner();
+        if (n == 0 && current) addEmptyState();
+
+        for (int i = 0; i < n; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(10);
+            list.addView(buildCard(month.habits.get(i), current), lp);
+        }
+
+        if (current && n < MonthStore.MAX_HABITS) list.addView(buildAddButton());
+
+        if (n > 0) {
+            TextView hint = text(12, DIM, false);
+            hint.setGravity(Gravity.CENTER);
+            hint.setLineSpacing(0, 1.35f);
+            hint.setPadding(dp(12), dp(18), dp(12), 0);
+            hint.setText(current
+                    ? "Πάτα μια συνήθεια μόλις την κάνεις.\n"
+                    + "Τα μεσάνυχτα ξετικάρονται όλες για τη νέα μέρα.\n"
+                    + "Πάτα τις τελείες για προηγούμενες μέρες.\n"
+                    + "Κράτα πατημένη μια συνήθεια για αλλαγές."
+                    : "Πάτα μια συνήθεια για να δεις ή να διορθώσεις τις μέρες της.");
+            list.addView(hint);
+        }
+    }
+
+    /** Updates the header and every card in place: after ticks, which change no layout. */
+    private void refresh() {
+        for (MonthStore.Habit h : month.habits) {
+            if (cards.get(h.id) == null) {
+                render();
+                return;
+            }
+        }
+        renderHeader();
+        for (MonthStore.Habit h : month.habits) bindCard(h, cards.get(h.id));
+    }
+
+    private void renderHeader() {
         boolean current = isCurrent();
         int n = month.habits.size();
         int todayNum = today.getDayOfMonth();
@@ -289,48 +347,16 @@ public class MainActivity extends Activity {
             bar.addView(new View(this), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 100 - pct));
         }
         if (current) bar.setBackground(null);
-
-        // Habits
-        list.removeAllViews();
-        checkViews.clear();
-        if (current) addLastMonthBanner();
-        if (n == 0 && current) addEmptyState();
-
-        Map<YearMonth, MonthStore.Month> cache = new HashMap<>();
-        cache.put(shown, month);
-        for (int i = 0; i < n; i++) {
-            MonthStore.Habit h = month.habits.get(i);
-            int streak = current ? store.streak(h.id, today, cache) : 0;
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = dp(10);
-            list.addView(buildCard(h, i, current, streak), lp);
-        }
-
-        if (current && n < MonthStore.MAX_HABITS) list.addView(buildAddButton());
-
-        if (n > 0) {
-            TextView hint = text(12, DIM, false);
-            hint.setGravity(Gravity.CENTER);
-            hint.setLineSpacing(0, 1.35f);
-            hint.setPadding(dp(12), dp(18), dp(12), 0);
-            hint.setText(current
-                    ? "Πάτα μια συνήθεια μόλις την κάνεις.\n"
-                    + "Τα μεσάνυχτα ξετικάρονται όλες για τη νέα μέρα.\n"
-                    + "Πάτα τις τελείες για προηγούμενες μέρες.\n"
-                    + "Κράτα πατημένη μια συνήθεια για αλλαγές."
-                    : "Πάτα μια συνήθεια για να δεις ή να διορθώσεις τις μέρες της.");
-            list.addView(hint);
-        }
     }
 
-    private View buildCard(final MonthStore.Habit h, final int index, final boolean current, int streak) {
-        boolean doneToday = current && h.isDone(today.getDayOfMonth());
-
+    private View buildCard(final MonthStore.Habit h, final boolean current) {
+        final CardViews cv = new CardViews();
         final LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(18), dp(14), dp(14), dp(10));
-        card.setBackground(cardBackground(doneToday ? CARD_DONE : CARD, doneToday ? LINE_DONE : LINE, false));
+        cv.card = card;
+        cv.background = roundedRect(CARD, LINE, false);
+        card.setBackground(withRipple(cv.background));
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -343,36 +369,26 @@ public class MainActivity extends Activity {
         name.setSingleLine(true);
         name.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(name);
-        TextView meta = text(13, DIM, false);
-        meta.setPadding(0, dp(2), 0, 0);
-        meta.setText(current ? currentMeta(h.count(), streak)
-                : h.count() + " από " + shown.lengthOfMonth() + " μέρες");
-        col.addView(meta);
+        cv.meta = text(13, DIM, false);
+        cv.meta.setPadding(0, dp(2), 0, 0);
+        col.addView(cv.meta);
         top.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         if (current) {
-            ImageView check = new ImageView(this);
-            check.setScaleType(ImageView.ScaleType.CENTER);
-            check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            GradientDrawable oval = new GradientDrawable();
-            oval.setShape(GradientDrawable.OVAL);
-            if (doneToday) {
-                oval.setColor(ACCENT);
-                check.setImageResource(R.drawable.ic_check);
-                check.setImageTintList(ColorStateList.valueOf(ON_ACCENT));
-            } else {
-                oval.setStroke(dp(2), RING);
-            }
-            check.setBackground(oval);
+            cv.check = new ImageView(this);
+            cv.check.setScaleType(ImageView.ScaleType.CENTER);
+            cv.check.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            cv.check.setImageTintList(ColorStateList.valueOf(ON_ACCENT));
+            cv.checkCircle = new GradientDrawable();
+            cv.checkCircle.setShape(GradientDrawable.OVAL);
+            cv.check.setBackground(cv.checkCircle);
             LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(dp(40), dp(40));
             clp.leftMargin = dp(12);
-            top.addView(check, clp);
-            checkViews.put(h.id, check);
-            card.setContentDescription(h.name + (doneToday ? ", έγινε σήμερα" : ", δεν έγινε ακόμα σήμερα"));
+            top.addView(cv.check, clp);
         }
 
         DotStrip strip = new DotStrip(this);
-        strip.set(shown.lengthOfMonth(), h.days, current ? today.getDayOfMonth() : Integer.MAX_VALUE);
+        cv.strip = strip;
         strip.setPadding(0, dp(10), dp(4), dp(10));
         strip.setBackground(ripple(0, dp(8)));
         strip.setContentDescription("Μέρες του μήνα για " + h.name);
@@ -397,12 +413,35 @@ public class MainActivity extends Activity {
             card.setOnLongClickListener(new View.OnLongClickListener() {
                 @Override
                 public boolean onLongClick(View v) {
-                    showOptions(card, h, index);
+                    showOptions(card, h);
                     return true;
                 }
             });
         }
+        cards.put(h.id, cv);
+        bindCard(h, cv);
         return card;
+    }
+
+    /** Shows the habit's current state on its card; only changes colours and text, never layout. */
+    private void bindCard(MonthStore.Habit h, CardViews cv) {
+        boolean current = isCurrent();
+        int days = shown.lengthOfMonth();
+        boolean doneToday = current && h.isDone(today.getDayOfMonth());
+        cv.background.setColor(doneToday ? CARD_DONE : CARD);
+        cv.background.setStroke(dp(1), doneToday ? LINE_DONE : LINE);
+        if (current) {
+            cv.meta.setText(currentMeta(h.count(), store.streak(h.id, today, month)));
+            cv.checkCircle.setColor(doneToday ? ACCENT : 0);
+            cv.checkCircle.setStroke(dp(2), doneToday ? ACCENT : RING);
+            if ((cv.check.getDrawable() != null) != doneToday) {
+                cv.check.setImageDrawable(doneToday ? getDrawable(R.drawable.ic_check) : null);
+            }
+            cv.card.setContentDescription(h.name + (doneToday ? ", έγινε σήμερα" : ", δεν έγινε ακόμα σήμερα"));
+        } else {
+            cv.meta.setText(h.count() + " από " + (days - Math.min(h.since, days) + 1) + " μέρες");
+        }
+        cv.strip.set(days, h.days, current ? today.getDayOfMonth() : Integer.MAX_VALUE, h.since);
     }
 
     private static String currentMeta(int count, int streak) {
@@ -417,7 +456,7 @@ public class MainActivity extends Activity {
         TextView add = text(15, ACCENT, true);
         add.setText("+  Νέα συνήθεια");
         add.setGravity(Gravity.CENTER);
-        add.setBackground(cardBackground(0, ADD_BORDER, true));
+        add.setBackground(withRipple(roundedRect(0, ADD_BORDER, true)));
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -453,7 +492,7 @@ public class MainActivity extends Activity {
         banner.setText("Ο " + MONTHS[prev.getMonthValue() - 1] + " έκλεισε στο "
                 + p.percent(prev.lengthOfMonth()) + "%  ·  δες τον ›");
         banner.setPadding(dp(16), dp(14), dp(16), dp(14));
-        banner.setBackground(cardBackground(ACCENT_SOFT, ACCENT_SOFT, false));
+        banner.setBackground(withRipple(roundedRect(ACCENT_SOFT, ACCENT_SOFT, false)));
         banner.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -475,14 +514,14 @@ public class MainActivity extends Activity {
         boolean done = !h.isDone(d);
         h.setDone(d, done);
         store.save(month);
-        render();
-        View check = checkViews.get(h.id);
-        if (check != null) {
-            check.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+        refresh();
+        CardViews cv = cards.get(h.id);
+        if (cv != null && cv.check != null) {
+            cv.check.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
             if (done) {
-                check.setScaleX(0.6f);
-                check.setScaleY(0.6f);
-                check.animate().scaleX(1f).scaleY(1f).setDuration(260)
+                cv.check.setScaleX(0.6f);
+                cv.check.setScaleY(0.6f);
+                cv.check.animate().scaleX(1f).scaleY(1f).setDuration(260)
                         .setInterpolator(new OvershootInterpolator(2.5f)).start();
             }
         }
@@ -549,7 +588,8 @@ public class MainActivity extends Activity {
                                 store.save(m);
                                 v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                                 refresh.run();
-                                if (m == month) render();
+                                // Also updates streaks that run into the month being edited.
+                                refresh();
                             }
                         });
                     }
@@ -585,14 +625,15 @@ public class MainActivity extends Activity {
             oval.setColor(future ? 0 : CELL);
             cell.setTextColor(future ? MUTED : TEXT);
         }
-        cell.setTypeface(Typeface.create(done || date.equals(opened) ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        cell.setTypeface(done || date.equals(opened) ? MEDIUM : Typeface.DEFAULT);
         GradientDrawable mask = new GradientDrawable();
         mask.setShape(GradientDrawable.OVAL);
         mask.setColor(0xFFFFFFFF);
         cell.setBackground(future ? oval : new RippleDrawable(ColorStateList.valueOf(RIPPLE), oval, mask));
     }
 
-    private void showOptions(View anchor, final MonthStore.Habit h, final int index) {
+    private void showOptions(View anchor, final MonthStore.Habit h) {
+        int index = month.habits.indexOf(h);
         PopupMenu pm = new PopupMenu(this, anchor, Gravity.END);
         Menu m = pm.getMenu();
         m.add(0, 1, 0, "Μετονομασία");
@@ -612,9 +653,10 @@ public class MainActivity extends Activity {
                         return true;
                     case 3:
                     case 4:
-                        int i = month.habits.indexOf(h);
+                        checkNewDay();
+                        int i = indexOf(h.id);
                         int j = item.getItemId() == 3 ? i - 1 : i + 1;
-                        if (i >= 0 && j >= 0 && j < month.habits.size()) {
+                        if (isCurrent() && i >= 0 && j >= 0 && j < month.habits.size()) {
                             Collections.swap(month.habits, i, j);
                             store.save(month);
                             render();
@@ -631,7 +673,6 @@ public class MainActivity extends Activity {
     }
 
     private void confirmDelete(final MonthStore.Habit h) {
-        final MonthStore.Month m = month;
         AlertDialog d = new AlertDialog.Builder(this, R.style.DialogTheme)
                 .setTitle("Διαγραφή «" + h.name + "»;")
                 .setMessage("Φεύγει από αυτόν τον μήνα μαζί με τα τικ του. Οι προηγούμενοι μήνες μένουν όπως είναι.")
@@ -639,9 +680,13 @@ public class MainActivity extends Activity {
                 .setNeutralButton("Διαγραφή", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        m.habits.remove(h);
-                        store.save(m);
-                        if (m == month) render();
+                        // Past midnight into a new month, the habit to remove is that month's copy.
+                        checkNewDay();
+                        int i = indexOf(h.id);
+                        if (!isCurrent() || i < 0) return;
+                        month.habits.remove(i);
+                        store.save(month);
+                        render();
                     }
                 })
                 .show();
@@ -650,7 +695,6 @@ public class MainActivity extends Activity {
 
     /** Adds a habit ({@code existing} null) or renames one. */
     private void openNameDialog(final MonthStore.Habit existing) {
-        final MonthStore.Month m = month;
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(22), dp(22), dp(22), dp(4));
@@ -686,7 +730,7 @@ public class MainActivity extends Activity {
         if (existing == null) {
             LinearLayout row = new LinearLayout(this);
             for (final String s : SUGGESTIONS) {
-                if (hasHabitNamed(m, s)) continue;
+                if (hasHabitNamed(month, s)) continue;
                 TextView c = chip(s);
                 c.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -718,16 +762,22 @@ public class MainActivity extends Activity {
                     @Override
                     public void onClick(DialogInterface d, int which) {
                         String t = input.getText().toString().trim().replaceAll("\\s+", " ");
-                        if (t.isEmpty()) return;
+                        // Past midnight into a new month, the change belongs to that month.
+                        checkNewDay();
+                        if (t.isEmpty() || !isCurrent()) return;
                         if (existing != null) {
-                            existing.name = t;
-                        } else if (m.habits.size() < MonthStore.MAX_HABITS) {
-                            m.habits.add(new MonthStore.Habit(store.nextId(), t));
+                            int i = indexOf(existing.id);
+                            if (i < 0) return;
+                            month.habits.get(i).name = t;
+                        } else if (month.habits.size() < MonthStore.MAX_HABITS) {
+                            MonthStore.Habit h = new MonthStore.Habit(store.nextId(), t);
+                            h.since = today.getDayOfMonth();
+                            month.habits.add(h);
                         } else {
                             return;
                         }
-                        store.save(m);
-                        if (m == month) render();
+                        store.save(month);
+                        render();
                     }
                 })
                 .create();
@@ -745,6 +795,13 @@ public class MainActivity extends Activity {
         input.requestFocus();
         dialog.show();
         styleDialog(dialog);
+    }
+
+    private int indexOf(int habitId) {
+        for (int i = 0; i < month.habits.size(); i++) {
+            if (month.habits.get(i).id == habitId) return i;
+        }
+        return -1;
     }
 
     private static boolean hasHabitNamed(MonthStore.Month m, String name) {
@@ -782,7 +839,7 @@ public class MainActivity extends Activity {
         TextView tv = new TextView(this);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
         tv.setTextColor(color);
-        if (medium) tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (medium) tv.setTypeface(MEDIUM);
         return tv;
     }
 
@@ -816,17 +873,22 @@ public class MainActivity extends Activity {
         return g;
     }
 
-    /** Rounded card with a hairline border; {@code dashed} for the "add" placeholder. */
-    private Drawable cardBackground(int color, int stroke, boolean dashed) {
+    /** Rounded card shape with a hairline border; {@code dashed} for the "add" placeholder. */
+    private GradientDrawable roundedRect(int color, int stroke, boolean dashed) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
         g.setCornerRadius(dp(18));
         if (dashed) g.setStroke(dp(1.5f), stroke, dp(6), dp(5));
         else g.setStroke(dp(1), stroke);
+        return g;
+    }
+
+    /** Touch feedback over a card shape; the shape stays live, so its colours can change later. */
+    private Drawable withRipple(GradientDrawable shape) {
         GradientDrawable mask = new GradientDrawable();
         mask.setColor(0xFFFFFFFF);
         mask.setCornerRadius(dp(18));
-        return new RippleDrawable(ColorStateList.valueOf(RIPPLE), g, mask);
+        return new RippleDrawable(ColorStateList.valueOf(RIPPLE), shape, mask);
     }
 
     private Drawable ripple(int color, int radius) {
