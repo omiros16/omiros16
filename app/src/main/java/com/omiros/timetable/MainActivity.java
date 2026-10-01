@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
             int now = nowSlot();
             LocalDate today = LocalDate.now();
             if (now != lastNowSlot || !today.equals(lastToday)) render();
+            else positionNowLine();
             handler.postDelayed(this, 30_000);
         }
     };
@@ -85,6 +86,7 @@ public class MainActivity extends Activity {
     private View barRest;
     private TextView banner;
     private ScrollView scroll;
+    private View nowLine;
     private final View[] rows = new View[DayStore.SLOTS];
     private final TextView[] timeViews = new TextView[DayStore.SLOTS];
     private final TextView[] boxViews = new TextView[DayStore.SLOTS];
@@ -284,9 +286,47 @@ public class MainActivity extends Activity {
                 + "Κράτα πατημένο ένα γεμάτο κουτί για νέα δραστηριότητα από εκείνη την ώρα.\n"
                 + "Πάτα τον κύκλο δεξιά: ✓ έγινε · ✕ δεν έγινε.");
         list.addView(hint);
-        scroll.addView(list);
+        // The list plus a "now" line drawn over it at the current minute.
+        android.widget.FrameLayout canvas = new android.widget.FrameLayout(this);
+        canvas.addView(list);
+        nowLine = buildNowLine();
+        android.widget.FrameLayout.LayoutParams nlp = new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(10));
+        nlp.leftMargin = dp(12 + 54 - 5);
+        nlp.rightMargin = dp(8 + 42);
+        canvas.addView(nowLine, nlp);
+        scroll.addView(canvas);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         return root;
+    }
+
+    private View buildNowLine() {
+        LinearLayout line = new LinearLayout(this);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        GradientDrawable dot = new GradientDrawable();
+        dot.setShape(GradientDrawable.OVAL);
+        dot.setColor(ACCENT);
+        View d = new View(this);
+        d.setBackground(dot);
+        line.addView(d, new LinearLayout.LayoutParams(dp(10), dp(10)));
+        View bar = new View(this);
+        bar.setBackgroundColor(ACCENT);
+        line.addView(bar, new LinearLayout.LayoutParams(0, dp(2), 1));
+        line.setVisibility(View.GONE);
+        return line;
+    }
+
+    /** Places the now line at the current minute; rows are a fixed 44dp below an 8dp list padding. */
+    private void positionNowLine() {
+        if (nowSlot() < 0) {
+            nowLine.setVisibility(View.GONE);
+            return;
+        }
+        LocalTime t = LocalTime.now();
+        float minutes = t.getHour() * 60 + t.getMinute() + t.getSecond() / 60f - DayStore.START_MIN;
+        float y = dp(8) + minutes / DayStore.SLOT_MIN * dp(44);
+        nowLine.setTranslationY(y - dp(5));
+        nowLine.setVisibility(View.VISIBLE);
     }
 
     private View buildRow(final int i) {
@@ -379,6 +419,13 @@ public class MainActivity extends Activity {
         int done = 0;
         int missed = 0;
         float r = dp(8);
+        // The block (or empty slot) the current time falls in gets a slightly lighter fill.
+        int activeFrom = -1;
+        int activeTo = -1;
+        if (now >= 0) {
+            activeFrom = day.text[now] == null ? now : blockStart(now);
+            activeTo = day.text[now] == null ? now : activeFrom + blockLen(activeFrom) - 1;
+        }
 
         for (int i = 0; i < DayStore.SLOTS; i++) {
             String t = day.text[i];
@@ -395,15 +442,15 @@ public class MainActivity extends Activity {
 
             GradientDrawable bg = new GradientDrawable();
             int color;
-            if (!filled) color = EMPTY_BOX;
+            boolean active = i >= activeFrom && i <= activeTo;
+            if (!filled) color = active ? EMPTY_NOW : EMPTY_BOX;
             else if (st == DayStore.DONE) color = DONE_BOX;
             else if (st == DayStore.MISSED) color = MISSED_BOX;
-            else color = BLOCK;
+            else color = active ? BLOCK_NOW : BLOCK;
             bg.setColor(color);
             float top = joinPrev ? 0 : r;
             float bottom = joinNext ? 0 : r;
             bg.setCornerRadii(new float[]{top, top, top, top, bottom, bottom, bottom, bottom});
-            if (i == now) bg.setStroke(dp(2), ACCENT);
 
             TextView box = boxViews[i];
             box.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF), bg, null));
@@ -443,6 +490,7 @@ public class MainActivity extends Activity {
         setWeight(barDone, done);
         setWeight(barMissed, missed);
         setWeight(barRest, planned == 0 ? 1 : planned - done - missed);
+        positionNowLine();
     }
 
     private Drawable statusBackground(int st) {
