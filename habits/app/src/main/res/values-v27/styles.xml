@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same as values/, plus dark navigation bar buttons (attribute exists from Android 8.1). -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#FFF6F5F1</item>
+        <item name="android:colorPrimaryDark">#FFF6F5F1</item>
+        <item name="android:colorAccent">#FF2F7A5F</item>
+        <item name="android:windowBackground">@drawable/bg</item>
+        <item name="android:statusBarColor">#FFF6F5F1</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FFF6F5F1</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorBackground">#FFFFFFFF</item>
+    </style>
+</resources>
