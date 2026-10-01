@@ -72,6 +72,7 @@ public class MainActivity extends Activity {
 
     private TextView subtitleView;
     private TextView titleView;
+    private ImageView historyButton;
     private ImageView prevButton;
     private ImageView nextButton;
     private TextView statusView;
@@ -169,6 +170,17 @@ public class MainActivity extends Activity {
         });
         top.addView(titleCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
+        historyButton = iconButton(R.drawable.ic_history);
+        historyButton.setContentDescription("Προηγούμενοι μήνες");
+        historyButton.setImageTintList(ColorStateList.valueOf(DIM));
+        historyButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showMonth(shown.minusMonths(1));
+            }
+        });
+        top.addView(historyButton);
+
         prevButton = iconButton(R.drawable.ic_chevron_left);
         prevButton.setContentDescription("Προηγούμενος μήνας");
         prevButton.setOnClickListener(new View.OnClickListener() {
@@ -223,17 +235,20 @@ public class MainActivity extends Activity {
         int todayNum = today.getDayOfMonth();
         int elapsed = current ? todayNum : shown.lengthOfMonth();
 
-        // Header
+        // Header: today's date, or the month being looked back at.
+        YearMonth earliest = store.earliest();
         if (current) {
             subtitleView.setText(WEEKDAYS[today.getDayOfWeek().getValue() - 1] + " " + todayNum
                     + " " + MONTHS_GEN[today.getMonthValue() - 1]);
+            titleView.setText("Σήμερα");
         } else {
             subtitleView.setText("Ιστορικό · " + shown.getYear());
+            titleView.setText(MONTHS[shown.getMonthValue() - 1]);
         }
-        titleView.setText(MONTHS[shown.getMonthValue() - 1]);
-        YearMonth earliest = store.earliest();
+        historyButton.setVisibility(current && earliest != null && earliest.isBefore(shown) ? View.VISIBLE : View.GONE);
+        prevButton.setVisibility(current ? View.GONE : View.VISIBLE);
+        nextButton.setVisibility(current ? View.GONE : View.VISIBLE);
         setEnabled(prevButton, earliest != null && shown.isAfter(earliest));
-        setEnabled(nextButton, !current);
 
         int doneToday = 0;
         if (current) {
@@ -249,8 +264,10 @@ public class MainActivity extends Activity {
             statusView.setText("Δεν υπάρχουν καταγραφές γι' αυτόν τον μήνα");
             bar.setVisibility(View.GONE);
         } else if (current) {
-            statusView.setText((doneToday == n ? "Σήμερα έγιναν όλες" : "Σήμερα " + doneToday + " από " + n)
-                    + " · μήνας " + pct + "%");
+            String name = MONTHS[shown.getMonthValue() - 1];
+            // "τον Οκτώβριο": every month name takes the accusative by dropping its final ς.
+            statusView.setText((doneToday == n ? "Έγιναν όλες" : "Έγιναν " + doneToday + " από " + n)
+                    + " · " + pct + "% τον " + name.substring(0, name.length() - 1));
             bar.setVisibility(View.VISIBLE);
             // One segment per habit, filled as they get done today.
             for (int i = 0; i < n; i++) {
@@ -299,7 +316,8 @@ public class MainActivity extends Activity {
             hint.setPadding(dp(12), dp(18), dp(12), 0);
             hint.setText(current
                     ? "Πάτα μια συνήθεια μόλις την κάνεις.\n"
-                    + "Πάτα τις τελείες για να διορθώσεις προηγούμενες μέρες.\n"
+                    + "Τα μεσάνυχτα ξετικάρονται όλες για τη νέα μέρα.\n"
+                    + "Πάτα τις τελείες για προηγούμενες μέρες.\n"
                     + "Κράτα πατημένη μια συνήθεια για αλλαγές."
                     : "Πάτα μια συνήθεια για να δεις ή να διορθώσεις τις μέρες της.");
             list.addView(hint);
@@ -312,7 +330,7 @@ public class MainActivity extends Activity {
         final LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(18), dp(14), dp(14), dp(10));
-        card.setBackground(cardBackground(doneToday ? CARD_DONE : CARD, doneToday ? ACCENT_SOFT : LINE, false));
+        card.setBackground(cardBackground(doneToday ? CARD_DONE : CARD, doneToday ? LINE_DONE : LINE, false));
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -341,8 +359,9 @@ public class MainActivity extends Activity {
             if (doneToday) {
                 oval.setColor(ACCENT);
                 check.setImageResource(R.drawable.ic_check);
+                check.setImageTintList(ColorStateList.valueOf(ON_ACCENT));
             } else {
-                oval.setStroke(dp(2), 0xFFD6D4CD);
+                oval.setStroke(dp(2), RING);
             }
             check.setBackground(oval);
             LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(dp(40), dp(40));
@@ -398,7 +417,7 @@ public class MainActivity extends Activity {
         TextView add = text(15, ACCENT, true);
         add.setText("+  Νέα συνήθεια");
         add.setGravity(Gravity.CENTER);
-        add.setBackground(cardBackground(0, 0xFFCBDDD3, true));
+        add.setBackground(cardBackground(0, ADD_BORDER, true));
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -417,7 +436,8 @@ public class MainActivity extends Activity {
         TextView body = text(15, DIM, false);
         body.setLineSpacing(0, 1.3f);
         body.setText("Διάλεξε 3 έως 6 καθημερινές συνήθειες που σου κάνουν καλό. "
-                + "Τις τικάρεις όταν τις κάνεις και κάθε μήνας ξεκινά από το μηδέν.");
+                + "Τις τικάρεις όταν τις κάνεις και κάθε μέρα ξεκινούν από την αρχή, "
+                + "ενώ μετράνε πόσες μέρες τις έκανες μέσα στον μήνα.");
         body.setPadding(dp(4), 0, dp(4), dp(24));
         list.addView(body);
     }
@@ -557,19 +577,19 @@ public class MainActivity extends Activity {
         boolean future = date.isAfter(opened);
         if (done) {
             oval.setColor(ACCENT);
-            cell.setTextColor(0xFFFFFFFF);
+            cell.setTextColor(ON_ACCENT);
         } else if (date.equals(opened)) {
             oval.setStroke(dp(1.5f), ACCENT);
             cell.setTextColor(ACCENT);
         } else {
-            oval.setColor(future ? 0 : 0xFFF2F1EC);
-            cell.setTextColor(future ? 0xFFC4C6C9 : TEXT);
+            oval.setColor(future ? 0 : CELL);
+            cell.setTextColor(future ? MUTED : TEXT);
         }
         cell.setTypeface(Typeface.create(done || date.equals(opened) ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
         GradientDrawable mask = new GradientDrawable();
         mask.setShape(GradientDrawable.OVAL);
         mask.setColor(0xFFFFFFFF);
-        cell.setBackground(future ? oval : new RippleDrawable(ColorStateList.valueOf(0x22000000), oval, mask));
+        cell.setBackground(future ? oval : new RippleDrawable(ColorStateList.valueOf(RIPPLE), oval, mask));
     }
 
     private void showOptions(View anchor, final MonthStore.Habit h, final int index) {
@@ -647,7 +667,7 @@ public class MainActivity extends Activity {
 
         final EditText input = new EditText(this);
         input.setTextColor(TEXT);
-        input.setHintTextColor(0xFFB4B7BB);
+        input.setHintTextColor(MUTED);
         input.setHint("π.χ. Διάβασμα 20 λεπτά");
         input.setSingleLine(true);
         input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(MonthStore.MAX_NAME)});
@@ -783,7 +803,7 @@ public class MainActivity extends Activity {
         tv.setPadding(dp(14), dp(8), dp(14), dp(8));
         GradientDrawable g = new GradientDrawable();
         g.setCornerRadius(dp(18));
-        g.setColor(0xFFF6F5F1);
+        g.setColor(CHIP);
         g.setStroke(dp(1), LINE);
         tv.setBackground(new RippleDrawable(ColorStateList.valueOf(RIPPLE), g, null));
         return tv;
