@@ -9,6 +9,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -62,15 +63,14 @@ final class DayStore {
     }
 
     boolean hasPlan(LocalDate date) {
-        return new File(dir, date + ".json").exists();
+        // A ".bak" left by an interrupted write is restored by AtomicFile on the next read.
+        return new File(dir, date + ".json").exists() || new File(dir, date + ".json.bak").exists();
     }
 
     Day load(LocalDate date) {
         Day day = new Day();
-        AtomicFile f = file(date);
-        if (!f.getBaseFile().exists()) return day;
         try {
-            String raw = new String(f.readFully(), StandardCharsets.UTF_8);
+            String raw = new String(file(date).readFully(), StandardCharsets.UTF_8);
             JSONArray slots = new JSONObject(raw).getJSONArray("slots");
             for (int n = 0; n < slots.length(); n++) {
                 JSONObject s = slots.getJSONObject(n);
@@ -79,6 +79,8 @@ final class DayStore {
                 day.text[i] = s.getString("t");
                 day.status[i] = s.optInt("s", NONE);
             }
+        } catch (FileNotFoundException e) {
+            // No plan for this day.
         } catch (IOException | JSONException ignored) {
             // Unreadable entry: start the day fresh rather than crash.
         }
@@ -172,6 +174,14 @@ final class DayStore {
 
     void setNotificationsOn(boolean on) {
         settings.edit().putBoolean("notifications", on).apply();
+    }
+
+    boolean askedNotificationPermission() {
+        return settings.getBoolean("asked_notif_permission", false);
+    }
+
+    void setAskedNotificationPermission() {
+        settings.edit().putBoolean("asked_notif_permission", true).apply();
     }
 
     static int slotStart(int i) {

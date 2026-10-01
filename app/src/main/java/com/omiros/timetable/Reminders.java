@@ -52,7 +52,11 @@ final class Reminders {
                 return;
             }
         }
-        am.cancel(alarmIntent(context, today, 0));
+        // Nothing left today or tomorrow: wake up just after midnight to look at the new "tomorrow",
+        // so plans written further ahead still get their notifications without opening the app.
+        long recheck = today.plusDays(1).atStartOfDay().plusMinutes(1)
+                .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, recheck, alarmIntent(context, today, -1));
     }
 
     /** Called when an alarm fires: notify if the block is still there, then arm the next one. */
@@ -66,8 +70,12 @@ final class Reminders {
             if (store.notificationsOn() && isBlockStart(day, slot)) {
                 int end = slot + 1;
                 while (end < DayStore.SLOTS && day.text[slot].equals(day.text[end])) end++;
-                notify(context, day.text[slot], DayStore.formatMin(DayStore.slotStart(slot))
-                        + " – " + DayStore.formatMin(DayStore.slotStart(end)));
+                // Skip a late alarm (phone was off) for an activity that is already over.
+                LocalDateTime endsAt = d.atStartOfDay().plusMinutes(DayStore.slotStart(end));
+                if (LocalDateTime.now().isBefore(endsAt)) {
+                    notify(context, day.text[slot], DayStore.formatMin(DayStore.slotStart(slot))
+                            + " – " + DayStore.formatMin(DayStore.slotStart(end)));
+                }
             }
         }
         reschedule(context);

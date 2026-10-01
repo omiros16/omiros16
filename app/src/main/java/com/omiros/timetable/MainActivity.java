@@ -61,10 +61,10 @@ public class MainActivity extends Activity {
     private final Runnable ticker = new Runnable() {
         @Override
         public void run() {
-            int now = nowSlot();
-            LocalDate today = LocalDate.now();
-            if (now != lastNowSlot || !today.equals(lastToday)) render();
-            else positionNowLine();
+            if (!followToday()) {
+                if (nowSlot() != lastNowSlot || !LocalDate.now().equals(lastToday)) render();
+                else positionNowLine();
+            }
             handler.postDelayed(this, 30_000);
         }
     };
@@ -100,7 +100,10 @@ public class MainActivity extends Activity {
         date = saved != null ? LocalDate.parse(saved) : LocalDate.now();
         setContentView(buildUi());
         showDate(date, true);
-        if (savedInstanceState == null && store.notificationsOn() && !hasNotificationPermission()) {
+        // Ask once on first launch; afterwards only when the bell is tapped.
+        if (savedInstanceState == null && store.notificationsOn() && !hasNotificationPermission()
+                && !store.askedNotificationPermission()) {
+            store.setAskedNotificationPermission();
             requestNotificationPermission();
         }
     }
@@ -108,8 +111,27 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        handler.post(ticker);
+        // Redraw: the clock, the date or the notification permission may have changed meanwhile.
+        if (!followToday()) render();
+        handler.postDelayed(ticker, 30_000);
         Reminders.reschedule(this);
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        // Opened from a notification: show today.
+        showDate(LocalDate.now(), true);
+    }
+
+    /** If the shown day was "today" and midnight has passed, move to the new today. */
+    private boolean followToday() {
+        LocalDate today = LocalDate.now();
+        if (lastToday != null && !today.equals(lastToday) && date.equals(lastToday)) {
+            showDate(today, true);
+            return true;
+        }
+        return false;
     }
 
     @Override
@@ -362,6 +384,7 @@ public class MainActivity extends Activity {
 
         TextView status = text(12, BG, true);
         status.setGravity(Gravity.CENTER);
+        status.setContentDescription("Έγινε / δεν έγινε");
         status.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -406,7 +429,7 @@ public class MainActivity extends Activity {
         styleChip(todayChip, date.equals(today));
         styleChip(tomorrowChip, date.equals(today.plusDays(1)));
 
-        boolean notif = store.notificationsOn();
+        boolean notif = store.notificationsOn() && hasNotificationPermission();
         bell.setImageResource(notif ? R.drawable.ic_bell : R.drawable.ic_bell_off);
         bell.setImageTintList(ColorStateList.valueOf(notif ? ACCENT : DIM));
 
@@ -525,12 +548,15 @@ public class MainActivity extends Activity {
     }
 
     private void toggleNotifications() {
-        boolean on = !store.notificationsOn();
+        boolean on = !(store.notificationsOn() && hasNotificationPermission());
         store.setNotificationsOn(on);
         Reminders.reschedule(this);
         render();
-        toast(on ? "Ειδοποιήσεις ενεργές" : "Ειδοποιήσεις απενεργοποιημένες");
-        if (on && !hasNotificationPermission()) requestNotificationPermission();
+        if (on && !hasNotificationPermission()) {
+            requestNotificationPermission();
+        } else {
+            toast(on ? "Ειδοποιήσεις ενεργές" : "Ειδοποιήσεις απενεργοποιημένες");
+        }
     }
 
     private boolean hasNotificationPermission() {
@@ -546,14 +572,27 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == REQ_NOTIF && grantResults.length > 0
-                && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-            toast("Για ειδοποιήσεις, δώσε άδεια από Ρυθμίσεις → Εφαρμογές → Timetable");
+        if (requestCode != REQ_NOTIF || grantResults.length == 0) return;
+        render();
+        if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            Reminders.reschedule(this);
+            toast("Ειδοποιήσεις ενεργές");
+        } else if (!shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+            // Android will not ask again; send the user to the app's notification settings.
+            toast("Άνοιξε τις ειδοποιήσεις για το Timetable");
+            try {
+                startActivity(new android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
+            } catch (android.content.ActivityNotFoundException ignored) {
+            }
         }
     }
 
     private void openEditor(final int start, int initialLen, final boolean existing) {
         final int origLen = existing ? initialLen : 0;
+        // Keep the day the editor was opened for, even if the shown day changes meanwhile (e.g. at midnight).
+        final LocalDate editDate = date;
+        final DayStore.Day editDay = day;
         final int maxLen = DayStore.SLOTS - start;
         final int[] len = {initialLen};
 
@@ -574,7 +613,7 @@ public class MainActivity extends Activity {
         input.setImeOptions(EditorInfo.IME_ACTION_DONE);
         input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
         if (existing) {
-            input.setText(day.text[start]);
+            input.setText(editDay.text[start]);
             input.setSelection(input.getText().length());
         }
         LinearLayout.LayoutParams inLp = new LinearLayout.LayoutParams(
@@ -681,9 +720,9 @@ public class MainActivity extends Activity {
                     public void onClick(DialogInterface d, int which) {
                         String t = input.getText().toString().trim();
                         if (t.isEmpty()) {
-                            if (existing) clearRange(start, origLen);
+                            if (existing) clearRange(editDate, editDay, start, origLen);
                         } else {
-                            applyEdit(start, origLen, len[0], t);
+                            applyEdit(editDate, editDay, start, origLen, len[0], t);
                         }
                     }
                 });
@@ -691,7 +730,7 @@ public class MainActivity extends Activity {
             b.setNeutralButton("Διαγραφή", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface d, int which) {
-                    clearRange(start, origLen);
+                    clearRange(editDate, editDay, start, origLen);
                 }
             });
         }
@@ -714,33 +753,39 @@ public class MainActivity extends Activity {
         styleButtons(dialog);
     }
 
-    private void applyEdit(int start, int origLen, int len, String t) {
-        String oldText = origLen > 0 ? day.text[start] : null;
-        int oldStatus = origLen > 0 ? day.status[start] : DayStore.NONE;
+    private void applyEdit(LocalDate d, DayStore.Day dd, int start, int origLen, int len, String t) {
+        String oldText = origLen > 0 ? dd.text[start] : null;
+        int oldStatus = origLen > 0 ? dd.status[start] : DayStore.NONE;
         for (int k = start; k < start + origLen; k++) {
-            day.text[k] = null;
-            day.status[k] = DayStore.NONE;
+            dd.text[k] = null;
+            dd.status[k] = DayStore.NONE;
         }
         int keep = t.equals(oldText) ? oldStatus : DayStore.NONE;
         for (int k = start; k < Math.min(DayStore.SLOTS, start + len); k++) {
-            day.text[k] = t;
-            day.status[k] = keep;
+            dd.text[k] = t;
+            dd.status[k] = keep;
         }
         store.addRecent(t);
-        persist();
+        persist(d, dd);
     }
 
-    private void clearRange(int start, int len) {
+    private void clearRange(LocalDate d, DayStore.Day dd, int start, int len) {
         for (int k = start; k < start + len; k++) {
-            day.text[k] = null;
-            day.status[k] = DayStore.NONE;
+            dd.text[k] = null;
+            dd.status[k] = DayStore.NONE;
         }
-        persist();
+        persist(d, dd);
     }
 
     /** Saves the shown day, re-arms the next reminder and redraws. */
     private void persist() {
-        store.save(date, day);
+        persist(date, day);
+    }
+
+    /** Saves a day (not necessarily the shown one), re-arms the next reminder and redraws. */
+    private void persist(LocalDate d, DayStore.Day dd) {
+        store.save(d, dd);
+        if (d.equals(date)) day = dd;
         Reminders.reschedule(this);
         render();
     }
@@ -757,7 +802,7 @@ public class MainActivity extends Activity {
             public boolean onMenuItemClick(MenuItem item) {
                 switch (item.getItemId()) {
                     case 1:
-                        copyFrom(date.minusDays(1));
+                        copyFrom(date.minusDays(1), date);
                         return true;
                     case 2:
                         pickDate(true);
@@ -767,11 +812,11 @@ public class MainActivity extends Activity {
                         persist();
                         return true;
                     case 4:
+                        final LocalDate target = date;
                         confirm("Να σβηστεί όλο το πρόγραμμα αυτής της μέρας;", new Runnable() {
                             @Override
                             public void run() {
-                                day = new DayStore.Day();
-                                persist();
+                                persist(target, new DayStore.Day());
                             }
                         });
                         return true;
@@ -783,12 +828,13 @@ public class MainActivity extends Activity {
     }
 
     private void pickDate(final boolean forCopy) {
+        final LocalDate target = date;
         DatePickerDialog dlg = new DatePickerDialog(this, R.style.DialogTheme,
                 new DatePickerDialog.OnDateSetListener() {
                     @Override
                     public void onDateSet(DatePicker view, int y, int m, int d) {
                         LocalDate picked = LocalDate.of(y, m + 1, d);
-                        if (forCopy) copyFrom(picked);
+                        if (forCopy) copyFrom(picked, target);
                         else showDate(picked, true);
                     }
                 }, date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
@@ -796,7 +842,9 @@ public class MainActivity extends Activity {
         styleButtons(dlg);
     }
 
-    private void copyFrom(final LocalDate src) {
+    /** Copies the activities (not the ✓/✕) of {@code src} into {@code target}. */
+    private void copyFrom(final LocalDate src, final LocalDate target) {
+        if (src.equals(target)) return;
         final DayStore.Day from = store.load(src);
         if (from.isEmpty()) {
             toast("Η μέρα " + src.format(SHORT_FMT) + " είναι άδεια");
@@ -805,13 +853,13 @@ public class MainActivity extends Activity {
         Runnable doCopy = new Runnable() {
             @Override
             public void run() {
-                day = new DayStore.Day();
-                System.arraycopy(from.text, 0, day.text, 0, DayStore.SLOTS);
-                persist();
+                DayStore.Day copy = new DayStore.Day();
+                System.arraycopy(from.text, 0, copy.text, 0, DayStore.SLOTS);
+                persist(target, copy);
                 toast("Αντιγράφηκε");
             }
         };
-        if (day.isEmpty()) doCopy.run();
+        if (!store.hasPlan(target)) doCopy.run();
         else confirm("Το τωρινό πρόγραμμα θα αντικατασταθεί. Συνέχεια;", doCopy);
     }
 
