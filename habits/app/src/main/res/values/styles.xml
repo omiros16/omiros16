@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:colorPrimary">#FF3A4150</item>
-        <item name="android:colorPrimaryDark">#FF3A4150</item>
-        <item name="android:colorAccent">#FF86D8AE</item>
+        <item name="android:colorPrimary">#FF33363B</item>
+        <item name="android:colorPrimaryDark">#FF33363B</item>
+        <item name="android:colorAccent">#FF7ACFA2</item>
         <item name="android:windowBackground">@drawable/bg</item>
-        <item name="android:statusBarColor">#FF3A4150</item>
+        <item name="android:statusBarColor">#FF33363B</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:navigationBarColor">#FF3A4150</item>
-        <item name="android:colorBackground">#FF454D5E</item>
+        <item name="android:navigationBarColor">#FF33363B</item>
+        <item name="android:colorBackground">#FF3E4147</item>
     </style>
 
     <style name="DialogTheme" parent="@android:style/Theme.Material.Dialog.Alert">
-        <item name="android:colorAccent">#FF86D8AE</item>
-        <item name="android:colorBackground">#FF454D5E</item>
-        <item name="android:textColorPrimary">#FFF0F2F6</item>
+        <item name="android:colorAccent">#FF7ACFA2</item>
+        <item name="android:colorBackground">#FF3E4147</item>
+        <item name="android:textColorPrimary">#FFF0F1F2</item>
     </style>
 </resources>
