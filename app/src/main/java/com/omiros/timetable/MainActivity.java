@@ -14,7 +14,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
@@ -90,7 +89,6 @@ public class MainActivity extends Activity {
     private final View[] rows = new View[DayStore.SLOTS];
     private final TextView[] timeViews = new TextView[DayStore.SLOTS];
     private final TextView[] boxViews = new TextView[DayStore.SLOTS];
-    private final TextView[] statusViews = new TextView[DayStore.SLOTS];
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -274,7 +272,7 @@ public class MainActivity extends Activity {
         scroll.setVerticalScrollBarEnabled(false);
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(12), dp(8), dp(8), dp(24));
+        list.setPadding(dp(12), dp(8), dp(16), dp(24));
         for (int i = 0; i < DayStore.SLOTS; i++) {
             list.addView(buildRow(i));
         }
@@ -284,7 +282,7 @@ public class MainActivity extends Activity {
         hint.setPadding(dp(16), dp(20), dp(16), 0);
         hint.setText("Πάτα ένα κουτί για να γράψεις τι θα κάνεις.\n"
                 + "Κράτα πατημένο ένα γεμάτο κουτί για νέα δραστηριότητα από εκείνη την ώρα.\n"
-                + "Πάτα τον κύκλο δεξιά: ✓ έγινε · ✕ δεν έγινε.");
+                + "Πάτα ένα γεμάτο κουτί για να το σημειώσεις ✓ έγινε ή ✕ δεν έγινε.");
         list.addView(hint);
         // The list plus a "now" line drawn over it at the current minute.
         android.widget.FrameLayout canvas = new android.widget.FrameLayout(this);
@@ -293,7 +291,7 @@ public class MainActivity extends Activity {
         android.widget.FrameLayout.LayoutParams nlp = new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(10));
         nlp.leftMargin = dp(12 + 54 - 5);
-        nlp.rightMargin = dp(8 + 42);
+        nlp.rightMargin = dp(16);
         canvas.addView(nowLine, nlp);
         scroll.addView(canvas);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -360,22 +358,10 @@ public class MainActivity extends Activity {
         });
         row.addView(box, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
 
-        TextView status = text(12, BG, true);
-        status.setGravity(Gravity.CENTER);
-        status.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                cycleStatus(i);
-            }
-        });
-        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(dp(40), dp(40));
-        stLp.leftMargin = dp(2);
-        row.addView(status, stLp);
 
         rows[i] = row;
         timeViews[i] = time;
         boxViews[i] = box;
-        statusViews[i] = status;
         return row;
     }
 
@@ -464,15 +450,6 @@ public class MainActivity extends Activity {
             lp.bottomMargin = joinNext ? 0 : dp(2);
             box.setLayoutParams(lp);
 
-            TextView sv = statusViews[i];
-            if (filled && !joinPrev) {
-                sv.setVisibility(View.VISIBLE);
-                sv.setText(st == DayStore.DONE ? "✓" : st == DayStore.MISSED ? "✕" : "");
-                sv.setBackground(statusBackground(st));
-            } else {
-                sv.setVisibility(View.INVISIBLE);
-            }
-
             TextView tv = timeViews[i];
             boolean hour = i % 4 == 0;
             tv.setTextColor(i == now ? ACCENT : hour ? TEXT : DIM);
@@ -493,18 +470,6 @@ public class MainActivity extends Activity {
         positionNowLine();
     }
 
-    private Drawable statusBackground(int st) {
-        GradientDrawable oval = new GradientDrawable();
-        oval.setShape(GradientDrawable.OVAL);
-        if (st == DayStore.DONE) oval.setColor(GREEN);
-        else if (st == DayStore.MISSED) oval.setColor(RED);
-        else oval.setStroke(dp(1.5f), 0xFF4A5261);
-        GradientDrawable mask = new GradientDrawable();
-        mask.setShape(GradientDrawable.OVAL);
-        mask.setColor(0xFFFFFFFF);
-        return new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), new InsetDrawable(oval, dp(9)), mask);
-    }
-
     // ---------------------------------------------------------------- interactions
 
     private void onBoxTap(int i) {
@@ -514,14 +479,6 @@ public class MainActivity extends Activity {
             int s = blockStart(i);
             openEditor(s, blockLen(s), true);
         }
-    }
-
-    private void cycleStatus(int i) {
-        if (day.text[i] == null) return;
-        int s = blockStart(i);
-        int next = (day.status[s] + 1) % 3;
-        for (int k = s, n = s + blockLen(s); k < n; k++) day.status[k] = next;
-        persist();
     }
 
     private void toggleNotifications() {
@@ -565,7 +522,37 @@ public class MainActivity extends Activity {
         range.setFontFeatureSettings("tnum");
         content.addView(range);
 
+        // Accountability: mark an existing block as done / not done (saves and closes right away).
+        final AlertDialog[] holder = new AlertDialog[1];
         final EditText input = new EditText(this);
+        if (existing) {
+            LinearLayout statusRow = new LinearLayout(this);
+            statusRow.setPadding(0, dp(14), 0, dp(2));
+            final int current = day.status[start];
+            int[] values = {DayStore.DONE, DayStore.MISSED};
+            String[] labels = {"✓  Έγινε", "✕  Δεν έγινε"};
+            for (int k = 0; k < 2; k++) {
+                final int value = values[k];
+                TextView c = chip(labels[k]);
+                styleStatusChip(c, value, current == value);
+                c.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        String t = input.getText().toString().trim();
+                        applyEdit(start, origLen, len[0], t.isEmpty() ? day.text[start] : t,
+                                current == value ? DayStore.NONE : value);
+                        holder[0].dismiss();
+                    }
+                });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+                if (k == 0) lp.rightMargin = dp(8);
+                c.setGravity(Gravity.CENTER);
+                c.setPadding(dp(14), dp(10), dp(14), dp(10));
+                statusRow.addView(c, lp);
+            }
+            content.addView(statusRow);
+        }
+
         input.setTextColor(TEXT);
         input.setHintTextColor(DIM);
         input.setHint("Τι θα κάνεις;");
@@ -683,7 +670,7 @@ public class MainActivity extends Activity {
                         if (t.isEmpty()) {
                             if (existing) clearRange(start, origLen);
                         } else {
-                            applyEdit(start, origLen, len[0], t);
+                            applyEdit(start, origLen, len[0], t, -1);
                         }
                     }
                 });
@@ -696,6 +683,7 @@ public class MainActivity extends Activity {
             });
         }
         final AlertDialog dialog = b.create();
+        holder[0] = dialog;
         input.setOnEditorActionListener(new TextView.OnEditorActionListener() {
             @Override
             public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
@@ -714,14 +702,15 @@ public class MainActivity extends Activity {
         styleButtons(dialog);
     }
 
-    private void applyEdit(int start, int origLen, int len, String t) {
+    /** @param status new status for the block, or -1 to keep it when the text is unchanged */
+    private void applyEdit(int start, int origLen, int len, String t, int status) {
         String oldText = origLen > 0 ? day.text[start] : null;
         int oldStatus = origLen > 0 ? day.status[start] : DayStore.NONE;
         for (int k = start; k < start + origLen; k++) {
             day.text[k] = null;
             day.status[k] = DayStore.NONE;
         }
-        int keep = t.equals(oldText) ? oldStatus : DayStore.NONE;
+        int keep = status >= 0 ? status : t.equals(oldText) ? oldStatus : DayStore.NONE;
         for (int k = start; k < Math.min(DayStore.SLOTS, start + len); k++) {
             day.text[k] = t;
             day.status[k] = keep;
@@ -953,6 +942,22 @@ public class MainActivity extends Activity {
             g.setColor(ACCENT_BG);
             g.setStroke(dp(1), ACCENT);
             c.setTextColor(ACCENT_SOFT);
+        } else {
+            g.setColor(0xFF1A1E26);
+            g.setStroke(dp(1), FAINT);
+            c.setTextColor(TEXT);
+        }
+        c.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), g, null));
+    }
+
+    private void styleStatusChip(TextView c, int value, boolean selected) {
+        int color = value == DayStore.DONE ? GREEN : RED;
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(18));
+        if (selected) {
+            g.setColor(value == DayStore.DONE ? DONE_BOX : MISSED_BOX);
+            g.setStroke(dp(1), color);
+            c.setTextColor(color);
         } else {
             g.setColor(0xFF1A1E26);
             g.setStroke(dp(1), FAINT);
