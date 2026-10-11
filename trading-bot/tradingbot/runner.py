@@ -1,16 +1,20 @@
-"""The live loop: poll, check risk, run strategies on new closed bars, execute.
+"""The live loop: poll, check risk, decide on new closed bars, execute until done.
 
 Order of checks on every poll:
-  1. kill switch file / killed state      -> flatten, stop trading
-  2. new day                              -> reset daily counters
+  1. account checks (wrong account / reset requests), kill switch file
+  2. new day                              -> reset daily counters, refresh backup stops
   3. equity vs daily loss / max drawdown  -> flatten (and kill on max drawdown)
   4. weekend close (if required)          -> flatten
-  5. per strategy slot, on a new closed bar -> strategy -> risk -> broker
+  5. per strategy slot: on a new closed bar the strategy DECIDES; the decision is
+     stored and EXECUTED, retried with backoff until it succeeds (the D1 bar
+     closes at 17:00 New York, when US index CFDs are in their daily break, so
+     the first attempt often meets a closed market)
   6. daily heartbeat to Telegram
 
-State (risk counters, last processed bar, known tickets) is saved to JSON
-after every poll, so a restart neither forgets the day's losses nor re-fires
-a signal that was already acted on.
+Decisions are stored separately from executions: a TARGET decision is
+idempotent (the executor compares the wanted size with the actual tickets), so
+it is safe to retry after any failure. State (risk counters, last decided bar,
+pending decisions, known tickets) is saved to JSON after every poll.
 """
 
 from __future__ import annotations
@@ -18,25 +22,29 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import os
 import time
-from dataclasses import asdict
-from datetime import datetime, timezone
+from dataclasses import asdict, fields
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 
 from .alerts import Alerts
-from .brokers.base import Broker, BrokerError
+from .brokers.base import Broker, BrokerError, MarketClosedError, UnknownOutcomeError
 from .config import BotConfig, Slot
 from .data.feeds import Feed
-from .models import CostModel, Position, Side, Signal, SignalKind
+from .models import CostModel, InstrumentSpec, Position, Side, Signal, SignalKind
 from .mt5_client import TIMEFRAMES
 from .risk import RiskManager, RiskState, day_key
 from .strategies import create_strategy
 
 log = logging.getLogger(__name__)
+
+RETRY_DELAYS = (60, 120, 240, 480, 900)  # seconds between execution attempts
+RESET_FILE = "RESET_KILL"
 
 
 def utcnow() -> datetime:
@@ -53,6 +61,34 @@ def _aggregate(positions: list[Position]) -> Position | None:
     first = min(positions, key=lambda p: p.entry_time)
     entry = sum(p.entry_price * p.volume for p in positions) / vol
     return Position(**{**first.__dict__, "volume": round(vol, 8), "entry_price": entry})
+
+
+def _encode(sig: Signal) -> dict:
+    return {
+        "kind": sig.kind.value,
+        "side": int(sig.side) if sig.side is not None else None,
+        "stop_loss": sig.stop_loss,
+        "take_profit": sig.take_profit,
+        "reason": sig.reason,
+        "exposure": sig.exposure,
+        "min_change": sig.min_change,
+    }
+
+
+def _decode(d: dict) -> Signal:
+    return Signal(
+        SignalKind(d["kind"]),
+        Side(d["side"]) if d.get("side") is not None else None,
+        d.get("stop_loss"),
+        d.get("take_profit"),
+        d.get("reason", ""),
+        d.get("exposure"),
+        d.get("min_change", 0.0),
+    )
+
+
+def _floor_step(x: float, step: float) -> float:
+    return round(math.floor(x / step + 1e-9) * step, 8)
 
 
 class BotRunner:
@@ -73,7 +109,10 @@ class BotRunner:
         if not self.slots:
             raise ValueError("no enabled strategy slots in the config")
         self.strategies = {s.id: create_strategy(s.strategy, s.params) for s in self.slots}
-        self.magics = {s.magic: s for s in self.slots}
+        # Risk protection (kill switch, daily loss, max drawdown, weekend) covers the
+        # positions of EVERY configured slot, enabled or not: disabling a slot must
+        # never leave its open position unprotected.
+        self.magics = {s.magic: s for s in cfg.slots}
         # Simulated stops/swaps run once per symbol, on its finest timeframe.
         self.stop_slot: dict[str, str] = {}
         for s in sorted(self.slots, key=lambda s: TIMEFRAMES.index(s.timeframe), reverse=True):
@@ -81,28 +120,42 @@ class BotRunner:
 
         rt = cfg.runtime
         self.state_path = Path(rt.state_dir) / "bot_state.json"
+        self.reset_path = Path(rt.state_dir) / RESET_FILE
         self.kill_file = Path(rt.kill_switch_file)
         self.journal_path = Path(rt.log_dir) / "trades.csv"
         self.state = self._load_state()
         self.risk = RiskManager(cfg.limits, self.state["risk"])
+        self._started = False
+        self._bars_cache: dict[tuple[str, str, int], pd.DataFrame] = {}
+        self._account_blocked = ""
 
     # State ---------------------------------------------------------------------
     def _load_state(self) -> dict:
-        if self.state_path.exists():
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-            raw["risk"] = RiskState(**raw["risk"])
-            raw["known"] = {int(k): v for k, v in raw.get("known", {}).items()}
-            return raw
-        return {
+        state = {
             "risk": RiskState(initial_balance=self.cfg.initial_balance),
             "last_bar": {},
+            "pending": {},
             "known": {},
+            "history": {},
+            "guard": {},
+            "close_retry_at": "",
             "heartbeat_day": "",
+            "account": None,
+            "fresh": True,
         }
+        if self.state_path.exists():
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+            names = {f.name for f in fields(RiskState)}
+            raw["risk"] = RiskState(**{k: v for k, v in raw["risk"].items() if k in names})
+            raw["known"] = {int(k): v for k, v in raw.get("known", {}).items()}
+            state.update(raw)
+            state["fresh"] = False
+        return state
 
     def save_state(self) -> None:
         data = {**self.state, "risk": asdict(self.state["risk"])}
         data["risk"]["events"] = data["risk"]["events"][-200:]
+        data.pop("fresh", None)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
@@ -128,18 +181,37 @@ class BotRunner:
             self.alerts.send("Bot σταμάτησε (χειροκίνητα). Οι ανοιχτές θέσεις έμειναν με τα SL/TP τους.")
         finally:
             self.save_state()
+            getattr(self.alerts, "close", lambda: None)()
             self.broker.shutdown()
 
     def step(self) -> None:
         now = self.clock()
         risk = self.risk
+        self._bars_cache = {}
+        # A simulated broker settles the stops hit during the bars that closed since
+        # the last poll first: they belong to the day that just ended, before the
+        # day reset below moves the stops.
+        if self.broker.simulated:
+            self._simulate_fills()
+
+        # Any error reading the account (e.g. the MT5 terminal switched to another
+        # account) aborts the poll before the risk state is touched.
+        account = self.broker.account()
+        if not self._started:
+            self._startup_checks(account)
+            self._started = True
+        self._consume_reset_request(account)
+        if self._account_blocked:
+            self.alerts.send(self._account_blocked, dedupe_seconds=3600)
+            self.save_state()
+            return
 
         if self.kill_file.exists() and not risk.state.killed:
             risk.kill(f"kill switch file {self.kill_file} found")
             self.alerts.send("KILL SWITCH: κλείνω όλες τις θέσεις και σταματάω τις συναλλαγές.")
 
-        account = self.broker.account()
-        if risk.start_day(day_key(now, self.cfg.limits.day_reset_timezone), account.balance, account.equity):
+        new_day = risk.start_day(day_key(now, self.cfg.limits.day_reset_timezone), account.balance, account.equity)
+        if new_day:
             log.info("new trading day %s, reference equity %.2f", risk.state.day, risk.state.day_start_ref)
 
         positions = self._my_positions()
@@ -152,175 +224,364 @@ class BotRunner:
             self.alerts.send(f"Ημερήσιο όριο ζημιάς: equity {account.equity:.2f}. Κλείνω θέσεις, παύση ως αύριο.")
 
         if positions and (risk.state.killed or risk.state.halted_today):
-            self._close_all(positions, "risk limit" if not risk.state.killed else "kill")
+            self._close_all(positions, "kill" if risk.state.killed else "risk limit", now)
         elif positions and risk.must_close_for_weekend(now):
-            self._close_all(positions, "weekend close")
+            self._close_all(positions, "weekend close", now)
+        elif new_day and positions:
+            self._refresh_stops(positions)
 
         for slot in self.slots:
-            try:
-                self._process_slot(slot, now)
-            except BrokerError as exc:
-                log.error("%s: %s", slot.id, exc)
-                self.alerts.send(f"{slot.id}: {exc}", dedupe_seconds=900)
+            for action in (self._process_slot, self._try_pending):
+                try:
+                    action(slot, now)
+                except Exception as exc:  # one slot's data or broker error must not stop the others
+                    log.exception("%s: %s failed", slot.id, action.__name__)
+                    self.alerts.send(f"{slot.id}: {type(exc).__name__}: {exc}", dedupe_seconds=900)
 
         self._heartbeat(now)
         self.save_state()
 
+    # Startup / account ---------------------------------------------------------
+    def _startup_checks(self, account) -> None:
+        s = self.risk.state
+        if s.initial_balance != self.cfg.initial_balance:
+            self.alerts.send(
+                f"account.initial_balance άλλαξε από {s.initial_balance:.2f} σε {self.cfg.initial_balance:.2f}: "
+                "τα όρια ζημιάς υπολογίζονται πλέον από τη νέα τιμή."
+            )
+            s.initial_balance = self.cfg.initial_balance
+        if self.state.get("fresh") and abs(account.balance - s.initial_balance) > 0.25 * s.initial_balance:
+            self.alerts.send(
+                f"ΠΡΟΣΟΧΗ: balance {account.balance:.2f} απέχει πολύ από το account.initial_balance "
+                f"{s.initial_balance:.2f}. Τα όρια ζημιάς βασίζονται στο initial_balance: έλεγξε το config."
+            )
+        login = getattr(account, "login", None)
+        known = self.state.get("account")
+        if login is not None:
+            if known is not None and int(known) != int(login):
+                self._account_blocked = (
+                    f"ΣΤΟΠ: ο λογαριασμός είναι {login}, ενώ το state είναι του {known}. Δεν κάνω συναλλαγές. "
+                    "Αν είναι νέος λογαριασμός: python -m tradingbot reset-kill --rebase"
+                )
+            elif known is None:
+                self.state["account"] = int(login)
+        orphans = [p for p in self.broker.positions() if p.magic in self.magics and not self.magics[p.magic].enabled]
+        for p in orphans:
+            self.alerts.send(
+                f"Ανοιχτή θέση #{p.ticket} {p.symbol} {p.volume} lots του απενεργοποιημένου slot "
+                f"{self.magics[p.magic].id}: δεν θα γίνει rebalance, μόνο έλεγχος ρίσκου. Κλείσ' τη ή ενεργοποίησε το slot."
+            )
+
+    def _consume_reset_request(self, account) -> None:
+        """`python -m tradingbot reset-kill` leaves a request file; apply it here (the bot owns the state)."""
+        if not self.reset_path.exists():
+            return
+        mode = self.reset_path.read_text(encoding="utf-8").strip()
+        self.reset_path.unlink()
+        s = self.risk.state
+        if mode == "rebase":
+            s.initial_balance = self.cfg.initial_balance
+            s.peak_equity = max(account.equity, s.initial_balance)
+            s.day_start_ref = max(account.balance, account.equity)
+            s.halted_today = False
+            self.risk.reset_kill()
+            self.state["account"] = getattr(account, "login", None)
+            self.state["pending"] = {}
+            self._account_blocked = ""
+            self.alerts.send(
+                f"Reset με rebase: initial balance {s.initial_balance:.2f}, equity {account.equity:.2f}. Το bot συνεχίζει."
+            )
+            return
+        if account.equity <= self.risk.drawdown_floor():
+            self.alerts.send(
+                f"Το reset-kill ΑΠΟΡΡΙΦΘΗΚΕ: equity {account.equity:.2f} κάτω από το όριο max drawdown "
+                f"{self.risk.drawdown_floor():.2f}. Για νέο/επαναφερμένο λογαριασμό: reset-kill --rebase."
+            )
+            return
+        was = s.kill_reason
+        self.risk.reset_kill()
+        self.alerts.send(f"Kill state καθαρίστηκε (ήταν: {was or '-'}). Το bot συνεχίζει.")
+
     # Slots ---------------------------------------------------------------------
     def _process_slot(self, slot: Slot, now: datetime) -> None:
+        """Decide on a new closed bar. Execution happens in _try_pending."""
         strat = self.strategies[slot.id]
-        inst = self.cfg.instruments[slot.symbol]
-        symbol = inst.broker_symbol
-        bars = self.feed.bars(symbol, slot.timeframe, strat.warmup_bars + 50)
-        if self.stop_slot[symbol] == slot.id:
-            for pos, price, reason in self.broker.on_bars(symbol, bars):
-                self._on_closed(pos, price, reason)
+        symbol = self.cfg.instruments[slot.symbol].broker_symbol
+        bars = self._bars(slot)
         if len(bars) < strat.warmup_bars:
-            log.warning("%s: only %d bars, need %d", slot.id, len(bars), strat.warmup_bars)
+            self.state["history"][slot.id] = {"have": len(bars), "need": strat.warmup_bars}
+            msg = (
+                f"{slot.id}: ΔΕΝ ΚΑΝΩ ΣΥΝΑΛΛΑΓΕΣ: ο broker δίνει μόνο {len(bars)} κλεισμένα {slot.timeframe} bars "
+                f"για {symbol}, η στρατηγική θέλει {strat.warmup_bars}. Βάλε instruments.{slot.symbol}.history_csv "
+                "(δες README) ή περίμενε να γεμίσει το ιστορικό."
+            )
+            log.warning(msg)
+            self.alerts.send(msg, dedupe_seconds=12 * 3600)
             return
+        self.state["history"].pop(slot.id, None)
 
-        last = bars.index[-1].isoformat()
-        if self.state["last_bar"].get(slot.id) == last:
-            return
-        # Mark first: at most one action per bar, even if execution fails below.
-        self.state["last_bar"][slot.id] = last
+        last_ts = bars.index[-1]
+        prev = self.state["last_bar"].get(slot.id)
+        if prev is not None and last_ts <= pd.Timestamp(prev):
+            return  # nothing new (or a stale feed briefly showing an older bar)
 
         data = strat.prepare(bars)
+        self._watch_regime(slot, data)
         mine = [p for p in self._my_positions() if p.magic == slot.magic]
-        pos = _aggregate(mine)
-        signal = strat.on_bar(data, len(data) - 1, pos)
-        log.info("%s: bar %s close %.2f -> %s", slot.id, last, data["close"].iat[-1], signal or "no signal")
-        if signal is None:
-            return
-        if signal.kind is SignalKind.TARGET:
-            self._rebalance(slot, signal, mine, now)
-        else:
-            self._execute(slot, signal, mine[0] if mine else None, now)
+        signal = strat.on_bar(data, len(data) - 1, _aggregate(mine))
+        self.state["last_bar"][slot.id] = last_ts.isoformat()
+        log.info("%s: bar %s close %.2f -> %s", slot.id, last_ts, data["close"].iat[-1], signal or "no signal")
 
-    def _rebalance(self, slot: Slot, sig: Signal, positions: list[Position], now: datetime) -> None:
-        """Resize a long-only, exposure-based position to sig.exposure x equity."""
+        pending = self.state["pending"].get(slot.id)
+        if signal is None:
+            # Entries and stop moves are only valid for the bar that produced them;
+            # an unexecuted exit stays pending until it is done.
+            if pending and pending["signal"]["kind"] in (SignalKind.OPEN.value, SignalKind.MODIFY.value):
+                self.state["pending"].pop(slot.id)
+            return
+        if pending and pending["signal"]["kind"] == SignalKind.CLOSE.value and signal.kind is not SignalKind.TARGET:
+            return  # an exit is still being executed; it takes precedence
+        self.state["pending"][slot.id] = {"bar": last_ts.isoformat(), "signal": _encode(signal), "attempts": 0,
+                                          "next_try": "", "last_error": ""}
+
+    def _bars(self, slot: Slot) -> pd.DataFrame:
+        """Closed bars for a slot, fetched once per poll."""
+        symbol = self.cfg.instruments[slot.symbol].broker_symbol
+        key = (symbol, slot.timeframe, self.strategies[slot.id].warmup_bars + 50)
+        if key not in self._bars_cache:
+            self._bars_cache[key] = self.feed.bars(*key)
+        return self._bars_cache[key]
+
+    def _simulate_fills(self) -> None:
+        for symbol, slot_id in self.stop_slot.items():
+            slot = next(s for s in self.slots if s.id == slot_id)
+            try:
+                bars = self._bars(slot)
+            except Exception:
+                log.exception("%s: no bars for the paper stops", symbol)
+                continue
+            for pos, price, reason in self.broker.on_bars(symbol, bars):
+                self._on_closed(pos, price, reason)
+
+    def _try_pending(self, slot: Slot, now: datetime) -> None:
+        pending = self.state["pending"].get(slot.id)
+        if not pending:
+            return
+        if pending["next_try"] and now < datetime.fromisoformat(pending["next_try"]):
+            return
+        sig = _decode(pending["signal"])
+        mine = [p for p in self._my_positions() if p.magic == slot.magic]
+        quiet = False
+        try:
+            if sig.kind is SignalKind.TARGET:
+                done, why = self._rebalance(slot, sig, mine, now)
+            else:
+                done, why = self._execute(slot, sig, mine, now)
+        except MarketClosedError as exc:
+            done, why, quiet = False, f"market closed: {exc}", True
+        except UnknownOutcomeError as exc:
+            done, why = False, f"unknown outcome, will re-check the positions: {exc}"
+        except BrokerError as exc:
+            done, why = False, str(exc)
+        if done:
+            self.state["pending"].pop(slot.id, None)
+            return
+        pending["attempts"] += 1
+        delay = RETRY_DELAYS[min(pending["attempts"] - 1, len(RETRY_DELAYS) - 1)]
+        pending["next_try"] = (now + timedelta(seconds=delay)).isoformat()
+        pending["last_error"] = why
+        log.info("%s: decision of bar %s not executed yet (attempt %d): %s", slot.id, pending["bar"],
+                 pending["attempts"], why)
+        if not quiet and pending["attempts"] in (1, 6):
+            self.alerts.send(f"{slot.id}: η απόφαση του bar {pending['bar']} δεν εκτελέστηκε ακόμα: {why}. "
+                             "Ξαναδοκιμάζω.", dedupe_seconds=600)
+
+    def _watch_regime(self, slot: Slot, data: pd.DataFrame) -> None:
+        if "regime_ok" not in data:
+            return
+        ok = bool(data["regime_ok"].iat[-1])
+        prev = self.state["guard"].get(slot.id)
+        if prev is not None and prev != ok:
+            ac = data["autocorr"].iat[-1] if "autocorr" in data else float("nan")
+            self.alerts.send(
+                f"{slot.id}: φρένο καθεστώτος {'ΕΝΕΡΓΟ: η θέση μηδενίζεται' if not ok else 'απενεργοποιήθηκε'} "
+                f"(αυτοσυσχέτιση {ac:+.3f})"
+            )
+        self.state["guard"][slot.id] = ok
+
+    def _rebalance(self, slot: Slot, sig: Signal, positions: list[Position], now: datetime) -> tuple[bool, str]:
+        """Resize a long-only, exposure-based position to sig.exposure x equity. Returns (done, why)."""
         symbol = self.cfg.instruments[slot.symbol].broker_symbol
         risk = self.risk
         account = self.broker.account()
         spec = self.broker.spec(symbol)
         q = self.broker.quote(symbol)
+        vpp = spec.value_per_point
         target = risk.target_volume(sig.exposure or 0.0, account.equity, q.ask, spec)
+        # max_exposure is an account-wide cap: other slots' positions use part of it.
+        other = sum(p.volume * self._mark(p) * self._vpp(p.symbol) for p in self._my_positions() if p.magic != slot.magic)
+        room = max(0.0, self.cfg.limits.max_exposure * account.equity - other)
+        target = min(target, _floor_step(room / (q.ask * vpp), spec.volume_step))
         current = round(sum(p.volume for p in positions), 8)
         diff = round(target - current, 8)
-        min_vol = max(spec.volume_step, sig.min_change * account.equity / (q.ask * spec.value_per_point))
-        if abs(diff) < min_vol - 1e-9 and not (target == 0 and current > 0):
+        min_vol = max(spec.volume_step, spec.volume_min, sig.min_change * account.equity / (q.ask * vpp))
+        if abs(diff) < min_vol - 1e-9 and not (target < spec.volume_min and current > 0):
             log.info("%s: exposure %.2fx, position %.2f lots kept (target %.2f)", slot.id, sig.exposure, current, target)
             self._update_stops(slot, positions, account.equity, q.bid, spec)
-            return
+            return True, ""
 
         if diff > 0:
             ok, why = risk.can_increase(now)
             if not ok:
-                log.info("%s: increase skipped: %s", slot.id, why)
-                return
+                # Killed: nothing to do. Halted / weekend window / request budget: retry later.
+                return risk.state.killed, f"increase refused: {why}"
             cap = min(self.cfg.limits.max_lots_per_ticket or spec.volume_max, spec.volume_max)
-            remaining = diff
-            sl = self._backup_stop(account.equity, q.bid, current + diff, spec)
-            while remaining > 1e-9:
-                lots = min(remaining, cap)
+            chunks = max(1, math.ceil(diff / cap - 1e-9))
+            chunk = _floor_step(diff / chunks, spec.volume_step)
+            sl = self._backup_stop(account.equity, q.bid, current + diff, spec, slot.magic)
+            opened_total = 0.0
+            for k in range(chunks):
+                lots = chunk if k < chunks - 1 else round(diff - chunk * (chunks - 1), 8)
+                if lots < spec.volume_min - 1e-9:
+                    break
                 opened = self._counted(lambda: self.broker.open(symbol, Side.LONG, lots, sl, None, slot.magic, slot.id))
                 self.state["known"][int(opened.ticket)] = slot.id
-                remaining = round(remaining - lots, 8)
-            if current == 0:
+                opened_total += opened.volume
+            if current == 0 and opened_total > 0:
                 risk.register_trade()
             self.alerts.send(
-                f"{slot.id}: {symbol} {current:.2f} -> {target:.2f} lots (έκθεση {sig.exposure:.2f}x) @ ~{q.ask:.2f}\n{sig.reason}"
+                f"{slot.id}: {symbol} {current:.2f} -> {current + opened_total:.2f} lots (έκθεση {sig.exposure:.2f}x) "
+                f"@ ~{q.ask:.2f}\n{sig.reason}"
             )
         else:
             to_close = -diff
+            closed_total = 0.0
+            # Newest tickets first.
             for pos in sorted(positions, key=lambda p: p.entry_time, reverse=True):
-                if to_close <= 1e-9:
+                if to_close < spec.volume_min - 1e-9:
                     break
                 lots = min(pos.volume, round(to_close, 8))
+                if pos.volume - lots < spec.volume_min - 1e-9:
+                    lots = pos.volume  # never leave a remainder below the broker minimum
                 full = lots >= pos.volume - 1e-9
-                price = self._counted(lambda: self.broker.close(pos, "rebalance", None if full else lots))
-                part = Position(**{**pos.__dict__, "volume": lots})
-                self._on_closed(part, price, "rebalance" if target > 0 else "target 0", alert=False, partial=not full)
-                if not full:
-                    pos.volume = round(pos.volume - lots, 8)
-                to_close = round(to_close - lots, 8)
+                fill = self._counted(lambda: self.broker.close(pos, "rebalance", None if full else lots))
+                part = Position(**{**pos.__dict__, "volume": fill.volume})
+                fully_closed = fill.volume >= pos.volume - 1e-9
+                self._on_closed(part, fill.price, "rebalance" if target > 0 else "target 0", alert=False,
+                                partial=not fully_closed)
+                closed_total += fill.volume
+                to_close = round(to_close - fill.volume, 8)
+                if fill.volume < lots - 1e-9:
+                    break  # partially filled: the retry will recompute from the real positions
             self.alerts.send(
-                f"{slot.id}: {symbol} {current:.2f} -> {target:.2f} lots (έκθεση {sig.exposure:.2f}x) @ ~{q.bid:.2f}\n{sig.reason}"
+                f"{slot.id}: {symbol} {current:.2f} -> {current - closed_total:.2f} lots (έκθεση {sig.exposure:.2f}x) "
+                f"@ ~{q.bid:.2f}\n{sig.reason}"
             )
-        remaining_positions = [p for p in self._my_positions() if p.magic == slot.magic]
-        self._update_stops(slot, remaining_positions, account.equity, q.bid, spec)
+            if to_close >= spec.volume_min - 1e-9:
+                return False, "position only partly reduced"
+        remaining = [p for p in self._my_positions() if p.magic == slot.magic]
+        self._update_stops(slot, remaining, account.equity, q.bid, spec)
+        return True, ""
 
-    def _backup_stop(self, equity: float, bid: float, lots: float, spec) -> float | None:
-        """Broker-side stop where the whole position would lose the daily loss limit.
+    def _backup_stop(self, equity: float, bid: float, lots: float, spec: InstrumentSpec, magic: int) -> float | None:
+        """Broker-side stop at the price where equity would reach the bot's own loss floor.
 
-        The bot's equity check is the primary protection; this stop only matters if
-        the bot is offline. It is never closer than 1.5% or farther than 20% from price.
+        It mirrors what the bot does when online (flatten at the daily-loss or
+        max-drawdown floor), so it only matters if the bot is offline. The room to
+        the floor is shared between all open positions in proportion to notional.
         """
         if lots <= 0:
             return None
-        loss_budget = equity * self.cfg.limits.daily_loss_limit_pct / 100
-        distance = loss_budget / (lots * spec.value_per_point)
-        distance = min(max(distance, 0.015 * bid), 0.20 * bid)
+        room = equity - self.risk.equity_floor()
+        if room <= 0:
+            return None
+        mine = lots * bid * spec.value_per_point
+        total = mine + sum(p.volume * self._mark(p) * self._vpp(p.symbol) for p in self._my_positions()
+                           if p.magic != magic)
+        distance = room * (mine / total) / (lots * spec.value_per_point)
+        distance = min(max(distance, 0.002 * bid), 0.20 * bid)
         return round(bid - distance, spec.digits)
 
-    def _update_stops(self, slot: Slot, positions: list[Position], equity: float, bid: float, spec) -> None:
+    def _update_stops(self, slot: Slot, positions: list[Position], equity: float, bid: float,
+                      spec: InstrumentSpec) -> None:
         if not positions:
             return
-        sl = self._backup_stop(equity, bid, sum(p.volume for p in positions), spec)
+        sl = self._backup_stop(equity, bid, sum(p.volume for p in positions), spec, slot.magic)
         for pos in positions:
             old = pos.stop_loss or 0.0
-            if sl is None or abs(sl - old) < 0.0025 * bid or self.risk.requests_left() < 3:
+            if sl is None or abs(sl - old) < 0.001 * bid or self.risk.requests_left() < 3:
                 continue
             self._counted(lambda: self.broker.modify(pos, sl, pos.take_profit))
 
-    def _execute(self, slot: Slot, sig: Signal, pos: Position | None, now: datetime) -> None:
+    def _refresh_stops(self, positions: list[Position]) -> None:
+        """The daily floor moves at the day reset: move the backup stops with it."""
+        account = self.broker.account()
+        for slot in self.slots:
+            mine = [p for p in positions if p.magic == slot.magic]
+            if not mine or self.strategies[slot.id].name != "mr_ensemble":
+                continue
+            symbol = self.cfg.instruments[slot.symbol].broker_symbol
+            try:
+                self._update_stops(slot, mine, account.equity, self.broker.quote(symbol).bid, self.broker.spec(symbol))
+            except BrokerError as exc:
+                log.warning("%s: backup stop refresh failed: %s", slot.id, exc)
+
+    def _execute(self, slot: Slot, sig: Signal, positions: list[Position], now: datetime) -> tuple[bool, str]:
+        """OPEN / CLOSE / MODIFY signals of stop-based strategies. Returns (done, why)."""
         inst = self.cfg.instruments[slot.symbol]
         symbol = inst.broker_symbol
         risk = self.risk
+        pos = positions[0] if positions else None
 
         if sig.kind is SignalKind.OPEN:
             if pos is not None or sig.side is None or sig.stop_loss is None:
-                return
+                return True, ""  # already open (e.g. an earlier attempt went through)
             ok, why = risk.can_open(len(self._my_positions()), now)
             if not ok:
                 log.info("%s: entry skipped: %s", slot.id, why)
-                return
+                return True, ""
             q = self.broker.quote(symbol)
             entry = q.ask if sig.side > 0 else q.bid
             if (entry - sig.stop_loss) * sig.side <= 0:
                 log.info("%s: price already beyond the stop, entry skipped", slot.id)
-                return
+                return True, ""
             spec = self.broker.spec(symbol)
             account = self.broker.account()
-            # The live quote already includes the spread; keep a slippage buffer.
-            costs = CostModel(spread=0.0, slippage=inst.costs.slippage)
+            # The live quote already includes the spread; keep slippage and commission.
+            costs = CostModel(spread=0.0, slippage=inst.costs.slippage_at(entry),
+                              commission_per_lot=inst.costs.commission_per_lot)
             size = risk.size(account.equity, entry, sig.stop_loss, spec, costs, self._open_risk())
             if size.volume <= 0:
                 log.info("%s: entry skipped: %s", slot.id, size.reason)
-                return
+                return True, ""
             opened = self._counted(lambda: self.broker.open(
                 symbol, sig.side, size.volume, sig.stop_loss, sig.take_profit, slot.magic, slot.id
             ))
             risk.register_trade()
             self.state["known"][int(opened.ticket)] = slot.id
             self.alerts.send(
-                f"ΑΝΟΙΓΜΑ {sig.side.label} {symbol} {size.volume} lots @ {opened.entry_price:.2f}\n"
+                f"ΑΝΟΙΓΜΑ {sig.side.label} {symbol} {opened.volume} lots @ {opened.entry_price:.2f}\n"
                 f"SL {sig.stop_loss:.2f} | TP {sig.take_profit or '-'} | ρίσκο ~{size.risk_amount:.0f} {self.cfg.currency}\n"
                 f"{slot.id}: {sig.reason}"
             )
-        elif sig.kind is SignalKind.CLOSE and pos is not None:
-            price = self._counted(lambda: self.broker.close(pos, sig.reason or "strategy exit"))
-            self._on_closed(pos, price, sig.reason or "strategy exit")
-        elif sig.kind is SignalKind.MODIFY and pos is not None:
+        elif sig.kind is SignalKind.CLOSE:
+            for p in positions:
+                fill = self._counted(lambda: self.broker.close(p, sig.reason or "strategy exit"))
+                self._on_closed(Position(**{**p.__dict__, "volume": fill.volume}), fill.price,
+                                sig.reason or "strategy exit", partial=fill.volume < p.volume - 1e-9)
+            if any(p.magic == slot.magic for p in self._my_positions()):
+                return False, "position not fully closed yet"
+        elif sig.kind is SignalKind.MODIFY:
             if risk.requests_left() < 2:
-                log.info("%s: stop update skipped, request budget low", slot.id)
-                return
+                return True, "stop update skipped, request budget low"
             q = self.broker.quote(symbol)
-            mark = q.bid if pos.side > 0 else q.ask
-            if sig.stop_loss is not None and (mark - sig.stop_loss) * pos.side <= 0:
-                return
-            self._counted(lambda: self.broker.modify(pos, sig.stop_loss, sig.take_profit))
+            for p in positions:
+                mark = q.bid if p.side > 0 else q.ask
+                if sig.stop_loss is not None and (mark - sig.stop_loss) * p.side <= 0:
+                    continue
+                self._counted(lambda: self.broker.modify(p, sig.stop_loss, sig.take_profit))
             log.info("%s: stop moved to %.2f (%s)", slot.id, sig.stop_loss or 0, sig.reason)
+        return True, ""
 
     # Helpers -------------------------------------------------------------------
     def _counted(self, action):
@@ -335,46 +596,68 @@ class BotRunner:
     def _my_positions(self) -> list[Position]:
         return [p for p in self.broker.positions() if p.magic in self.magics]
 
-    def _open_risk(self) -> list[tuple[Position, float, float]]:
-        out = []
-        for p in self._my_positions():
-            q = self.broker.quote(p.symbol)
-            mark = q.bid if p.side > 0 else q.ask
-            out.append((p, mark, self.broker.spec(p.symbol).value_per_point))
-        return out
+    def _mark(self, p: Position) -> float:
+        q = self.broker.quote(p.symbol)
+        return q.bid if p.side > 0 else q.ask
 
-    def _close_all(self, positions: list[Position], reason: str) -> None:
+    def _vpp(self, symbol: str) -> float:
+        return self.broker.spec(symbol).value_per_point
+
+    def _open_risk(self) -> list[tuple[Position, float, float]]:
+        return [(p, self._mark(p), self._vpp(p.symbol)) for p in self._my_positions()]
+
+    def _close_all(self, positions: list[Position], reason: str, now: datetime) -> None:
+        """Close every bot position; on failure retry with backoff instead of every poll."""
+        retry_at = self.state.get("close_retry_at") or ""
+        if retry_at and now < datetime.fromisoformat(retry_at):
+            return
+        failed = []
         for pos in positions:
             try:
-                price = self._counted(lambda: self.broker.close(pos, reason))
-                self._on_closed(pos, price, reason)
-            except BrokerError as exc:
-                self.alerts.send(f"ΔΕΝ έκλεισε η θέση #{pos.ticket} {pos.symbol}: {exc}", dedupe_seconds=600)
+                fill = self._counted(lambda: self.broker.close(pos, reason))
+            except Exception as exc:  # keep closing the others
+                failed.append(f"#{pos.ticket}: {exc}")
+                continue
+            self._on_closed(Position(**{**pos.__dict__, "volume": fill.volume}), fill.price, reason,
+                            partial=fill.volume < pos.volume - 1e-9)
+        if failed:
+            attempts = int(self.state.get("close_attempts", 0)) + 1
+            self.state["close_attempts"] = attempts
+            delay = RETRY_DELAYS[min(attempts - 1, len(RETRY_DELAYS) - 1)]
+            self.state["close_retry_at"] = (now + timedelta(seconds=delay)).isoformat()
+            self.alerts.send(f"ΔΕΝ έκλεισαν θέσεις ({reason}): {'; '.join(failed)}. Ξαναδοκιμάζω.",
+                             dedupe_seconds=600)
+        else:
+            self.state["close_retry_at"] = ""
+            self.state["close_attempts"] = 0
 
     def _on_closed(self, pos: Position, price: float, reason: str, alert: bool = True, partial: bool = False) -> None:
+        """Bookkeeping after the broker closed (part of) a ticket. Never raises."""
         if not partial:
             self.state["known"].pop(int(pos.ticket or 0), None)
         try:
-            vpp = self.broker.spec(pos.symbol).value_per_point
-        except BrokerError:
-            vpp = 1.0
-        pnl = pos.unrealized(price, vpp)
-        slot_id = self.magics[pos.magic].id if pos.magic in self.magics else "?"
-        self._journal(pos, price, pnl, reason, slot_id)
-        if alert:
-            self.alerts.send(
-                f"ΚΛΕΙΣΙΜΟ {pos.side.label} {pos.symbol} {pos.volume} lots @ {price:.2f} "
-                f"({reason}) | P&L ~{pnl:+.2f} {self.cfg.currency}"
-            )
+            try:
+                vpp = self._vpp(pos.symbol)
+            except Exception:
+                vpp = 1.0
+            pnl = pos.unrealized(price, vpp)
+            slot_id = self.magics[pos.magic].id if pos.magic in self.magics else "?"
+            self._journal(pos, price, pnl, reason, slot_id)
+            if alert:
+                self.alerts.send(
+                    f"ΚΛΕΙΣΙΜΟ {pos.side.label} {pos.symbol} {pos.volume} lots @ {price:.2f} "
+                    f"({reason}) | P&L ~{pnl:+.2f} {self.cfg.currency}"
+                )
+        except Exception:
+            log.exception("bookkeeping after closing #%s failed (the position IS closed)", pos.ticket)
 
     def _detect_external_closes(self, positions: list[Position]) -> None:
-        """Positions that vanished since the last poll were closed by SL/TP at the broker."""
+        """Tickets that vanished since the last poll were closed outside the bot (SL/TP or by hand)."""
         open_tickets = {int(p.ticket) for p in positions if p.ticket is not None}
         for ticket, slot_id in list(self.state["known"].items()):
             if ticket not in open_tickets:
                 self.state["known"].pop(ticket)
-                account = self.broker.account()
-                self.alerts.send(f"Η θέση #{ticket} ({slot_id}) έκλεισε στον broker (SL/TP). Balance {account.balance:.2f}")
+                self.alerts.send(f"Η θέση #{ticket} ({slot_id}) έκλεισε εκτός bot (SL/TP ή χειροκίνητα).")
         for p in positions:
             if p.ticket is not None and int(p.ticket) not in self.state["known"]:
                 self.state["known"][int(p.ticket)] = self.magics[p.magic].id
@@ -399,7 +682,16 @@ class BotRunner:
         account = self.broker.account()
         s = self.risk.state
         positions = self._my_positions()
-        status = "KILLED: " + s.kill_reason if s.killed else ("σε παύση (ημερήσιο όριο)" if s.halted_today else "OK")
+        problems = [f"{k}: μόνο {v['have']}/{v['need']} bars, ΔΕΝ κάνει συναλλαγές" for k, v in self.state["history"].items()]
+        problems += [f"{k}: απόφαση {v['bar']} σε αναμονή ({v['attempts']} προσπάθειες: {v['last_error']})"
+                     for k, v in self.state["pending"].items() if v["attempts"]]
+        problems += [f"{k}: φρένο καθεστώτος ενεργό" for k, ok in self.state["guard"].items() if ok is False]
+        if s.killed:
+            status = "KILLED: " + s.kill_reason
+        elif s.halted_today:
+            status = "σε παύση (ημερήσιο όριο)"
+        else:
+            status = "OK" if not problems else "ΠΡΟΣΟΧΗ"
         lines = [
             f"Ημερήσια αναφορά {today}",
             f"Balance {account.balance:.2f} | Equity {account.equity:.2f}",
@@ -408,5 +700,6 @@ class BotRunner:
             f"Θέσεις: {len(positions)} | Trades σήμερα: {s.trades_today} | Requests: {s.requests_today}",
             f"Κατάσταση: {status}",
         ]
+        lines += [f"  ! {p}" for p in problems]
         lines += [f"  {p.symbol} {p.side.label} {p.volume} @ {p.entry_price:.2f} SL {p.stop_loss}" for p in positions]
         self.alerts.send("\n".join(lines))

@@ -55,11 +55,20 @@ class QuartersSweep(Strategy):
             raise ValueError("quarter_size must be > 0")
         if p["rr"] <= 0:
             raise ValueError("rr must be > 0")
+        if int(p["atr_period"]) < 1:
+            raise ValueError("atr_period must be >= 1")
+        if p["level_source"] != "quarters" and int(p["swing_strength"]) < 1:
+            raise ValueError("swing_strength must be >= 1")
+        if not 0 <= p["min_penetration_atr"] <= p["max_penetration_atr"]:
+            raise ValueError("need 0 <= min_penetration_atr <= max_penetration_atr")
+        if p["sl_buffer_atr"] < 0 or (p["max_bars"] or 0) < 0:
+            raise ValueError("sl_buffer_atr and max_bars must be >= 0")
 
     @property
     def warmup_bars(self) -> int:
         p = self.params
-        return max(int(p["trend_ma"] or 0), p["atr_period"] + 1, 2 * p["swing_strength"] + 2)
+        # The live bot sees warmup_bars + 50 bars: the time stop needs the entry bar in view.
+        return max(int(p["trend_ma"] or 0), p["atr_period"] + 1, 2 * p["swing_strength"] + 2, int(p["max_bars"] or 0) + 2)
 
     def prepare(self, bars: pd.DataFrame) -> pd.DataFrame:
         p = self.params

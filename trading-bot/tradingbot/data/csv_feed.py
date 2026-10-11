@@ -8,6 +8,7 @@ Accepts the common layouts:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -20,33 +21,64 @@ def load_bars_csv(path: str | Path, start: str | None = None, end: str | None = 
     with path.open("r", encoding="utf-8-sig") as fh:
         first = fh.readline()
     sep = "\t" if "\t" in first else ("," if "," in first else ";")
-    raw = pd.read_csv(path, sep=sep)
-    raw.columns = [c.strip().strip("<>").lower() for c in raw.columns]
+    raw = pd.read_csv(path, sep=sep, encoding="utf-8-sig")
+    raw.columns = [str(c).strip().strip("<>").lower() for c in raw.columns]
 
     if "date" in raw.columns and "time" in raw.columns:
-        stamps = pd.to_datetime(raw["date"].astype(str) + " " + raw["time"].astype(str))
+        stamps = _parse_times(raw["date"].astype(str) + " " + raw["time"].astype(str), path)
     else:
         col = next((c for c in ("time", "datetime", "date", "timestamp") if c in raw.columns), None)
         if col is None:
             raise ValueError(f"{path}: no time/date column in {list(raw.columns)}")
-        stamps = pd.to_datetime(raw[col], utc=False)
-    if getattr(stamps.dt, "tz", None) is not None:
-        stamps = stamps.dt.tz_convert(None)
+        stamps = _parse_times(raw[col], path)
 
     missing = [c for c in OHLC if c not in raw.columns]
     if missing:
         raise ValueError(f"{path}: missing columns {missing}")
     cols = OHLC + (["volume"] if "volume" in raw.columns else ["tickvol"] if "tickvol" in raw.columns else [])
-    df = raw[cols].astype(float)
+    df = raw[cols].apply(pd.to_numeric, errors="coerce")
     df.columns = OHLC + (["volume"] if len(cols) == 5 else [])
     df.index = pd.DatetimeIndex(stamps, name="time")
-    df = df[~df.index.duplicated(keep="last")].sort_index().dropna(subset=OHLC)
+    # Drop empty rows ('null' rows in Yahoo files) before removing duplicate stamps,
+    # so that an empty duplicate never replaces a real bar.
+    df = df[df.index.notna()].dropna(subset=OHLC)
+    df = df[~df.index.duplicated(keep="last")].sort_index()
     if start:
         df = df[df.index >= pd.Timestamp(start)]
     if end:
         df = df[df.index <= pd.Timestamp(end)]
     _check(df, path)
     return df
+
+
+_OFFSET = re.compile(r"(?:[+-]\d{2}:?\d{2}|Z)$")
+_DMY = re.compile(r"^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})")
+
+
+def _parse_times(values: pd.Series, path: Path) -> pd.Series:
+    """Bar times as naive wall-clock timestamps.
+
+    * integer columns are epoch seconds (or milliseconds), as MT5 writes them;
+    * a UTC offset is dropped, keeping the wall time: a daily bar stamped
+      '2024-01-05 00:00+02:00' stays on Friday 5 January;
+    * dd/mm/yyyy vs mm/dd/yyyy is decided from the data, and refused when the
+      file cannot tell (every day and month <= 12).
+    """
+    if pd.api.types.is_numeric_dtype(values):
+        unit = "ms" if values.abs().max() > 1e11 else "s"
+        return pd.Series(pd.to_datetime(values, unit=unit))
+    text = values.astype(str).str.strip()
+    text = text.str.replace(_OFFSET, "", regex=True).str.strip()
+    dayfirst = False
+    parts = text.str.extract(_DMY)
+    if parts[0].notna().any():
+        first, second = parts[0].dropna().astype(int), parts[1].dropna().astype(int)
+        if (first > 12).any():
+            dayfirst = True
+        elif not (second > 12).any():
+            raise ValueError(f"{path}: dates like {text.iloc[0]!r} can be day/month or month/day; "
+                             "use year-month-day (2024-01-05)")
+    return pd.Series(pd.to_datetime(text, dayfirst=dayfirst, format="mixed"))
 
 
 def save_bars_csv(df: pd.DataFrame, path: str | Path) -> None:

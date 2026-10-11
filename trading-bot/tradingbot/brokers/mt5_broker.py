@@ -9,13 +9,14 @@ import pandas as pd
 
 from ..models import AccountInfo, InstrumentSpec, Position, Side
 from ..mt5_client import MT5Client
-from .base import Broker, BrokerError, Quote
+from .base import Broker, BrokerError, Fill, MarketClosedError, Quote, UnknownOutcomeError
 
 log = logging.getLogger(__name__)
 
 # MQL5 trade server return codes (ENUM_TRADE_RETURN_CODES).
 RETCODE_DONE = 10009
 RETCODE_DONE_PARTIAL = 10010
+RETCODE_MARKET_CLOSED = 10018
 RETRYABLE = {
     10004: "requote",
     10020: "prices changed",
@@ -56,7 +57,7 @@ class MT5Broker(Broker):
         info = self.mt5.account_info()
         if info is None:
             raise BrokerError(f"account_info failed: {self.mt5.last_error()}")
-        return AccountInfo(float(info.balance), float(info.equity), info.currency)
+        return AccountInfo(float(info.balance), float(info.equity), info.currency, getattr(info, "login", None))
 
     def spec(self, symbol: str) -> InstrumentSpec:
         self.client.ensure()
@@ -130,21 +131,39 @@ class MT5Broker(Broker):
                 "type_filling": self._filling(symbol),
             }
 
-        result = self._send(build, f"open {side.label} {volume} {symbol}")
+        result = self._send(build, f"open {side.label} {volume} {symbol}", resend_on_none=False)
+        filled = float(result.volume or volume)
+        if filled < volume - 1e-9:
+            log.warning("open %s: only %.2f of %.2f lots filled", symbol, filled, volume)
         return Position(
             symbol=symbol,
             side=side,
-            volume=result.volume or volume,
+            volume=filled,
             entry_price=result.price,
-            entry_time=pd.Timestamp.now(),
+            entry_time=self.quote(symbol).time or pd.Timestamp.now(),  # server time, like position.time
             stop_loss=sl,
             take_profit=tp,
-            ticket=result.order,
+            ticket=self._position_ticket(symbol, magic, result.order),
             magic=magic,
             comment=comment,
         )
 
-    def close(self, position: Position, comment: str = "", volume: float | None = None) -> float:
+    def _position_ticket(self, symbol: str, magic: int, order: int) -> int:
+        """Ticket of the position a market order created.
+
+        On hedging accounts it equals the order ticket. On netting accounts the
+        position keeps the ticket of the order that first opened it, so look it up.
+        """
+        raw = self.mt5.positions_get(symbol=symbol) or ()
+        for p in raw:
+            if p.ticket == order or getattr(p, "identifier", None) == order:
+                return int(p.ticket)
+        mine = [p for p in raw if p.magic == magic]
+        if len(mine) == 1:
+            return int(mine[0].ticket)
+        return int(order)
+
+    def close(self, position: Position, comment: str = "", volume: float | None = None) -> Fill:
         order_type = self.mt5.ORDER_TYPE_SELL if position.side is Side.LONG else self.mt5.ORDER_TYPE_BUY
         lots = float(position.volume if volume is None else min(volume, position.volume))
 
@@ -164,8 +183,11 @@ class MT5Broker(Broker):
                 "type_filling": self._filling(position.symbol),
             }
 
-        result = self._send(build, f"close #{position.ticket} {position.symbol}")
-        return float(result.price)
+        result = self._send(build, f"close #{position.ticket} {position.symbol}", resend_on_none=False)
+        closed = float(result.volume or lots)
+        if closed < lots - 1e-9:
+            log.warning("close #%s: only %.2f of %.2f lots closed", position.ticket, closed, lots)
+        return Fill(float(result.price), closed)
 
     def modify(self, position: Position, sl: float | None, tp: float | None) -> None:
         digits = self.spec(position.symbol).digits
@@ -199,7 +221,14 @@ class MT5Broker(Broker):
             return mt5.ORDER_FILLING_IOC
         return mt5.ORDER_FILLING_RETURN
 
-    def _send(self, build, what: str):
+    def _send(self, build, what: str, resend_on_none: bool = True):
+        """Send a request, retrying requotes and similar *rejections*.
+
+        A None reply means the outcome is unknown (the order may have been
+        executed). Market orders are then NOT resent: UnknownOutcomeError lets the
+        caller reconcile with the actual positions first. SL/TP changes are
+        idempotent and may be resent.
+        """
         self.client.ensure()
         last = None
         for attempt in range(1, self.retries + 1):
@@ -208,6 +237,10 @@ class MT5Broker(Broker):
             result = self.mt5.order_send(request)
             if result is None:
                 last = f"order_send returned None: {self.mt5.last_error()}"
+                if not resend_on_none:
+                    raise UnknownOutcomeError(f"{what}: {last}; check the open positions before retrying")
+            elif result.retcode == RETCODE_MARKET_CLOSED:
+                raise MarketClosedError(f"{what}: market closed ({result.retcode})")
             elif result.retcode in (RETCODE_DONE, RETCODE_DONE_PARTIAL):
                 log.info("%s: done (deal %s, price %s)", what, getattr(result, "deal", "?"), result.price)
                 return result

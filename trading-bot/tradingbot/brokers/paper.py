@@ -20,12 +20,14 @@ from typing import Callable
 import pandas as pd
 
 from ..models import AccountInfo, CostModel, InstrumentSpec, Position, Side
-from .base import Broker, BrokerError, Quote
+from .base import Broker, BrokerError, Fill, Quote
 
 log = logging.getLogger(__name__)
 
 
 class PaperBroker(Broker):
+    simulated = True
+
     def __init__(
         self,
         specs: dict[str, InstrumentSpec],
@@ -45,6 +47,8 @@ class PaperBroker(Broker):
         self._positions: dict[int, Position] = {}
         self._last_bar: dict[str, pd.Timestamp] = {}
         self._last_close: dict[str, float] = {}
+        # Day up to which each position's swap has been charged (by ticket).
+        self._swap_day: dict[int, pd.Timestamp] = {}
         self._load()
 
     # Persistence ---------------------------------------------------------------
@@ -56,6 +60,7 @@ class PaperBroker(Broker):
         self.next_ticket = raw["next_ticket"]
         self._last_bar = {k: pd.Timestamp(v) for k, v in raw.get("last_bar", {}).items()}
         self._last_close = raw.get("last_close", {})
+        swap_day = raw.get("swap_day", {})
         for p in raw["positions"]:
             pos = Position(
                 symbol=p["symbol"],
@@ -72,6 +77,8 @@ class PaperBroker(Broker):
                 commission=p["commission"],
             )
             self._positions[pos.ticket] = pos
+            last = self._last_bar.get(pos.symbol, pos.entry_time)
+            self._swap_day[pos.ticket] = pd.Timestamp(swap_day.get(str(pos.ticket), max(last, pos.entry_time))).normalize()
 
     def _save(self) -> None:
         if not self.state_path:
@@ -81,6 +88,7 @@ class PaperBroker(Broker):
             "next_ticket": self.next_ticket,
             "last_bar": {k: v.isoformat() for k, v in self._last_bar.items()},
             "last_close": self._last_close,
+            "swap_day": {str(k): v.isoformat() for k, v in self._swap_day.items()},
             "positions": [
                 {
                     "symbol": p.symbol,
@@ -117,7 +125,7 @@ class PaperBroker(Broker):
         if symbol not in self._last_close:
             raise BrokerError(f"no price for {symbol} yet")
         bid = self._last_close[symbol]
-        return Quote(bid, bid + self.costs[symbol].spread, self._last_bar.get(symbol))
+        return Quote(bid, bid + self.costs[symbol].spread_at(bid), self._last_bar.get(symbol))
 
     def _mark(self, pos: Position) -> float:
         q = self.quote(pos.symbol)
@@ -137,7 +145,7 @@ class PaperBroker(Broker):
 
     def open(self, symbol, side, volume, sl, tp, magic, comment) -> Position:
         q = self.quote(symbol)
-        slip = self.costs[symbol].slippage
+        slip = self.costs[symbol].slippage_at(q.bid)
         price = q.ask + slip if side is Side.LONG else q.bid - slip
         commission = self.costs[symbol].commission_per_lot * volume
         self.balance -= commission
@@ -155,17 +163,20 @@ class PaperBroker(Broker):
             commission=commission,
         )
         self._positions[pos.ticket] = pos
+        self._swap_day[pos.ticket] = pos.entry_time.normalize()
         self.next_ticket += 1
         self._save()
         log.info("PAPER open %s %s %.2f @ %.2f sl=%s tp=%s", symbol, side.label, volume, price, sl, tp)
         return replace(pos)
 
-    def close(self, position: Position, comment: str = "", volume: float | None = None) -> float:
+    def close(self, position: Position, comment: str = "", volume: float | None = None) -> Fill:
         pos = self._positions.get(position.ticket)
         if pos is None:
             raise BrokerError(f"paper position {position.ticket} not found")
         q = self.quote(pos.symbol)
-        slip = self.costs[pos.symbol].slippage
+        if q.time is not None:
+            self._charge_swap(pos, pd.Timestamp(q.time), q.bid)  # nights since the last bar processed
+        slip = self.costs[pos.symbol].slippage_at(q.bid)
         price = q.bid - slip if pos.side is Side.LONG else q.ask + slip
         if volume is not None and volume < pos.volume - 1e-9:
             vpp = self.spec(pos.symbol).value_per_point
@@ -173,9 +184,10 @@ class PaperBroker(Broker):
             self.balance += part.unrealized(price, vpp) - self.costs[pos.symbol].commission_per_lot * volume
             pos.volume = round(pos.volume - volume, 8)
             self._save()
-            return price
+            return Fill(price, volume)
+        closed = pos.volume
         self._settle(pos, price)
-        return price
+        return Fill(price, closed)
 
     def modify(self, position: Position, sl: float | None, tp: float | None) -> None:
         pos = self._positions.get(position.ticket)
@@ -189,7 +201,21 @@ class PaperBroker(Broker):
         commission = self.costs[pos.symbol].commission_per_lot * pos.volume
         self.balance += pos.unrealized(price, vpp) - commission
         del self._positions[pos.ticket]
+        self._swap_day.pop(pos.ticket, None)
         self._save()
+
+    def _charge_swap(self, pos: Position, t: pd.Timestamp, price: float) -> None:
+        """Financing for every rollover (midnight, server time) between the last charge and `t`."""
+        day = t.normalize()
+        since = self._swap_day.get(pos.ticket, pos.entry_time.normalize())
+        if day <= since or pos.entry_time >= t:
+            return
+        cost = self.costs[pos.symbol]
+        nights = (day - since).days
+        swap = nights * cost.swap_per_lot_night(pos.side, price, self.spec(pos.symbol).value_per_point) * pos.volume
+        pos.swap += swap
+        self.balance += swap
+        self._swap_day[pos.ticket] = day
 
     def on_bars(self, symbol: str, bars: pd.DataFrame) -> list[tuple[Position, float, str]]:
         """Apply swaps and stops/targets for bars closed since the last call."""
@@ -200,27 +226,31 @@ class PaperBroker(Broker):
         closed: list[tuple[Position, float, str]] = []
         if last is not None:
             cost = self.costs[symbol]
-            spread, slip = cost.spread, cost.slippage
-            prev_day = last.normalize()
+            spacing = _bar_spacing(bars.index)
             for t, bar in new.iterrows():
+                spread, slip = cost.spread_at(bar["open"]), cost.slippage_at(bar["open"])
                 for pos in [p for p in self._positions.values() if p.symbol == symbol]:
-                    if t.normalize() != prev_day and pos.entry_time < t:
-                        nights = (t.normalize() - prev_day).days
-                        rate = cost.swap_long_per_lot if pos.side is Side.LONG else cost.swap_short_per_lot
-                        pos.swap += nights * rate * pos.volume
-                        self.balance += nights * rate * pos.volume
-                    if pos.entry_time >= t:
-                        continue  # bar started before the fill
+                    self._charge_swap(pos, t, bar["open"])
+                    if pos.entry_time >= t + spacing:
+                        continue  # the whole bar happened before the fill
+                    # A position filled during this bar is checked against the whole bar
+                    # (pessimistic: the low may have come before the fill).
                     hit = _check_exit(pos, bar, spread, slip)
                     if hit:
                         price, reason = hit
                         closed.append((replace(pos), price, reason))
                         self._settle(pos, price)
-                prev_day = t.normalize()
         self._last_bar[symbol] = bars.index[-1]
         self._last_close[symbol] = float(bars["close"].iloc[-1])
         self._save()
         return closed
+
+
+def _bar_spacing(index: pd.DatetimeIndex) -> pd.Timedelta:
+    """Typical bar length (median gap), used to tell which bar a fill happened in."""
+    if len(index) < 2:
+        return pd.Timedelta(days=1)
+    return pd.Series(index).diff().median()
 
 
 def _check_exit(pos: Position, bar: pd.Series, spread: float, slip: float) -> tuple[float, str] | None:

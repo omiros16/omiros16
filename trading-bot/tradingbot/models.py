@@ -106,7 +106,16 @@ class InstrumentSpec:
 
 @dataclass(frozen=True)
 class CostModel:
-    """Trading costs. Spread and slippage are in price units (index points)."""
+    """Trading costs.
+
+    Spread and slippage are either fixed price units (`spread`, `slippage`, index
+    points) or, when set, basis points of the current price (`spread_bp`,
+    `slippage_bp`). Swap is either a fixed amount per lot per night
+    (`swap_*_per_lot`) or, when set, an annual percentage of the position's
+    notional (`swap_*_pct`, charged /360 per calendar night; negative = you pay).
+    The percentage forms keep costs realistic across decades of price history:
+    a fixed 1.5-point spread is 0.6 bp at 25,000 but 40 bp at 350.
+    """
 
     spread: float = 1.0
     slippage: float = 0.5
@@ -115,6 +124,34 @@ class CostModel:
     # Per lot, per night held, in account currency (negative = you pay).
     swap_long_per_lot: float = 0.0
     swap_short_per_lot: float = 0.0
+    spread_bp: float | None = None
+    slippage_bp: float | None = None
+    swap_long_pct: float | None = None
+    swap_short_pct: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("spread", "slippage", "commission_per_lot", "spread_bp", "slippage_bp"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, (int, float)) or value < 0):
+                raise ValueError(f"costs.{name} must be a number >= 0, got {value!r}")
+        for name in ("swap_long_per_lot", "swap_short_per_lot", "swap_long_pct", "swap_short_pct"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, (int, float)):
+                raise ValueError(f"costs.{name} must be a number, got {value!r}")
+
+    def spread_at(self, price: float) -> float:
+        """Spread in price units at this price level."""
+        return price * self.spread_bp / 1e4 if self.spread_bp is not None else self.spread
+
+    def slippage_at(self, price: float) -> float:
+        return price * self.slippage_bp / 1e4 if self.slippage_bp is not None else self.slippage
+
+    def swap_per_lot_night(self, side: "Side", price: float, value_per_point: float) -> float:
+        """Account currency per lot per night (negative = paid)."""
+        pct = self.swap_long_pct if side is Side.LONG else self.swap_short_pct
+        if pct is not None:
+            return pct / 100 / 360 * price * value_per_point
+        return self.swap_long_per_lot if side is Side.LONG else self.swap_short_per_lot
 
 
 @dataclass
@@ -122,6 +159,7 @@ class AccountInfo:
     balance: float
     equity: float
     currency: str = "USD"
+    login: int | None = None
 
 
 @dataclass

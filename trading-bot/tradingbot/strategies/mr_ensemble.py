@@ -138,6 +138,15 @@ class MREnsemble(Strategy):
             raise ValueError("vol_target and vol_cap must be > 0")
         if p["min_change"] < 0:
             raise ValueError("min_change must be >= 0")
+        if not 0 < p["vol_target"] <= 1:
+            raise ValueError(f"vol_target is a fraction: 0.15 means 15% a year (got {p['vol_target']!r})")
+        if int(p["vol_window"]) < 2:
+            raise ValueError("vol_window must be >= 2")
+        if int(p["regime_window"]) < 20:
+            raise ValueError("regime_window must be >= 20")
+        r = p["regime_max_autocorr"]
+        if r is not None and not -1 < r < 1:
+            raise ValueError("regime_max_autocorr must be between -1 and 1, or null to switch the guard off")
 
     @property
     def warmup_bars(self) -> int:

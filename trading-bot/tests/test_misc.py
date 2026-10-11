@@ -26,7 +26,16 @@ def test_example_config_loads():
 
 
 def test_config_errors_are_specific():
-    base = {"account": {"prop_firm": "ftmo_swing"}, "instruments": {"US100": {}}, "strategies": []}
+    base = {"account": {"prop_firm": "ftmo_swing", "initial_balance": 100_000}, "instruments": {"US100": {}},
+            "strategies": []}
+    with pytest.raises(ConfigError, match="initial_balance is required"):
+        parse_config({**base, "account": {"prop_firm": "ftmo_swing"}})
+    with pytest.raises(ConfigError, match="broker.filling"):
+        parse_config({**base, "broker": {"filling": "IOC"}})
+    with pytest.raises(ConfigError, match="unknown key"):
+        parse_config({**base, "broker": {"allow_order": True}})
+    with pytest.raises(ConfigError, match="out_sample_bars"):
+        parse_config({**base, "walkforward": {"out_sample_bars": 0}})
     with pytest.raises(ConfigError, match="below FTMO"):
         parse_config({**base, "risk": {"daily_loss_limit_pct": 6}})
     with pytest.raises(ConfigError, match="unknown key"):
@@ -96,4 +105,6 @@ def test_monte_carlo_shapes():
     res = run_backtest(bars, create_strategy("quarters_sweep", {"quarter_size": 50}), cfg)
     mc = monte_carlo(res.trades, n_sims=500, dd_limit_pct=8)
     assert mc["max_dd_99_pct"] <= mc["max_dd_95_pct"] <= mc["max_dd_median_pct"] <= 0
-    assert "prob_dd_beyond_8pct" in mc
+    assert "prob_peak_to_trough_beyond_8pct" in mc and "prob_loss_from_start_beyond_8pct" in mc
+    # A loss from the starting balance is never more likely than the same peak-to-trough drop.
+    assert mc["prob_loss_from_start_beyond_8pct"] <= mc["prob_peak_to_trough_beyond_8pct"]

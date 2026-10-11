@@ -59,5 +59,11 @@ def entry_index(data: pd.DataFrame, entry_time: pd.Timestamp) -> int:
 
 
 def bars_held(data: pd.DataFrame, i: int, entry_time: pd.Timestamp) -> int:
-    """Bars the position has been open for at the close of bar i (entry bar = 1)."""
+    """Bars the position has been open for at the close of bar i (entry bar = 1).
+
+    When the entry is older than the first bar in `data`, the count is a lower
+    bound (it cannot be smaller than the window), never a wrap-around.
+    """
+    if len(data) and entry_time < data.index[0]:
+        return i + 2
     return i - entry_index(data, entry_time) + 1

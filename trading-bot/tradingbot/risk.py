@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .models import CostModel, InstrumentSpec, Position
@@ -93,8 +93,14 @@ class RiskLimits:
     max_lots_per_ticket: float | None = None
     max_exposure: float = 3.0  # notional / equity cap for exposure-based strategies
     close_before_weekend: bool = False
-    weekend_close_utc: str = "FRI 20:00"
-    no_new_trades_after_utc: str = "FRI 18:00"
+    # Weekly window (UTC). Closing starts at weekend_close_utc, new exposure stops at
+    # no_new_trades_after_utc, and both end at weekend_reopen_utc (before US index CFDs
+    # reopen on Sunday 22:00/23:00 UTC). 16:30 UTC is before the earliest regular early
+    # close (Black Friday / July 3, 17:00-18:15 UTC). When Friday is a US market holiday
+    # the window starts on Thursday instead.
+    weekend_close_utc: str = "FRI 16:30"
+    no_new_trades_after_utc: str = "FRI 16:00"
+    weekend_reopen_utc: str = "SUN 21:00"
     day_reset_timezone: str = "Europe/Prague"
 
     def validate(self) -> None:
@@ -110,6 +116,7 @@ class RiskLimits:
             raise ValueError("max_exposure must be in (0, 20]")
         parse_weekly_time(self.weekend_close_utc)
         parse_weekly_time(self.no_new_trades_after_utc)
+        parse_weekly_time(self.weekend_reopen_utc)
         ZoneInfo(self.day_reset_timezone)
 
 
@@ -164,9 +171,61 @@ def day_key(now_utc: datetime, tz: str) -> str:
     return now_utc.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
 
 
-def _at_or_after(now_utc: datetime, weekly: str) -> bool:
+def _easter(year: int) -> date:
+    """Gregorian Easter Sunday (anonymous algorithm)."""
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = (h + l - 7 * m + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def us_friday_holiday(d: date) -> bool:
+    """True if Friday `d` is a full US stock market holiday (NYSE rules).
+
+    Fridays can be: Good Friday; New Year's Day; Juneteenth, Independence Day and
+    Christmas on a Friday or observed on Friday when they fall on a Saturday.
+    (New Year's Day on a Saturday is not observed on the Friday.)
+    """
+    if d.weekday() != 4:
+        return False
+    if d == _easter(d.year) - timedelta(days=2) or (d.month, d.day) == (1, 1):
+        return True
+    for month, day in ((6, 19), (7, 4), (12, 25)):
+        if (d.month, d.day) == (month, day):
+            return d.year >= 2022 or (month, day) != (6, 19)
+        saturday = d + timedelta(days=1)
+        if (saturday.month, saturday.day) == (month, day):
+            return saturday.year >= 2022 or (month, day) != (6, 19)
+    return False
+
+
+def _weekly_minute(weekly: str) -> int:
     weekday, t = parse_weekly_time(weekly)
-    return now_utc.weekday() == weekday and now_utc.time() >= t
+    return weekday * 1440 + t.hour * 60 + t.minute
+
+
+def in_weekly_window(now_utc: datetime, start: str, end: str) -> bool:
+    """now_utc in [start, end) of the week, e.g. ('FRI 16:30', 'SUN 21:00'); wraps around."""
+    m = now_utc.weekday() * 1440 + now_utc.hour * 60 + now_utc.minute
+    a, b = _weekly_minute(start), _weekly_minute(end)
+    return a <= m < b if a <= b else (m >= a or m < b)
+
+
+def _weekend_clock(now_utc: datetime) -> datetime:
+    """Shift by a day when Friday is a holiday, so Thursday follows Friday's rules."""
+    today = now_utc.date()
+    if now_utc.weekday() == 3 and us_friday_holiday(today + timedelta(days=1)):
+        return now_utc + timedelta(days=1)
+    if now_utc.weekday() == 4 and us_friday_holiday(today):
+        return now_utc + timedelta(days=1)
+    return now_utc
 
 
 @dataclass
@@ -269,7 +328,18 @@ class RiskManager:
 
     # -- decisions ---------------------------------------------------------
     def must_close_for_weekend(self, now_utc: datetime) -> bool:
-        return self.limits.close_before_weekend and _at_or_after(now_utc, self.limits.weekend_close_utc)
+        lim = self.limits
+        return lim.close_before_weekend and in_weekly_window(
+            _weekend_clock(now_utc), lim.weekend_close_utc, lim.weekend_reopen_utc
+        )
+
+    def in_no_new_trades_window(self, now_utc: datetime | None) -> bool:
+        lim = self.limits
+        return (
+            now_utc is not None
+            and lim.close_before_weekend
+            and in_weekly_window(_weekend_clock(now_utc), lim.no_new_trades_after_utc, lim.weekend_reopen_utc)
+        )
 
     def can_open(self, open_positions: int, now_utc: datetime | None = None) -> tuple[bool, str]:
         s, lim = self.state, self.limits
@@ -284,25 +354,21 @@ class RiskManager:
         # Opening needs one request now and possibly a few later (SL moves, close).
         if self.requests_left() < 3:
             return False, "daily server request budget used up"
-        if now_utc is not None and lim.close_before_weekend:
-            weekday, _ = parse_weekly_time(lim.no_new_trades_after_utc)
-            if _at_or_after(now_utc, lim.no_new_trades_after_utc) or now_utc.weekday() > weekday:
-                return False, "too close to the weekend close"
+        if self.in_no_new_trades_window(now_utc):
+            return False, "too close to the weekend close"
         return True, ""
 
     def can_increase(self, now_utc: datetime | None = None) -> tuple[bool, str]:
         """Checks for adding exposure (exposure-based strategies). Reducing is always allowed."""
-        s, lim = self.state, self.limits
+        s = self.state
         if s.killed:
             return False, f"killed: {s.kill_reason}"
         if s.halted_today:
             return False, "daily loss limit hit, trading paused until tomorrow"
         if self.requests_left() < 3:
             return False, "daily server request budget used up"
-        if now_utc is not None and lim.close_before_weekend:
-            weekday, _ = parse_weekly_time(lim.no_new_trades_after_utc)
-            if _at_or_after(now_utc, lim.no_new_trades_after_utc) or now_utc.weekday() > weekday:
-                return False, "too close to the weekend close"
+        if self.in_no_new_trades_window(now_utc):
+            return False, "too close to the weekend close"
         return True, ""
 
     def target_volume(self, exposure: float, equity: float, price: float, spec: InstrumentSpec) -> float:
@@ -335,7 +401,7 @@ class RiskManager:
         if distance <= 0:
             return SizeResult(0.0, 0.0, "stop distance is zero")
         if costs is not None:
-            distance += costs.spread + costs.slippage
+            distance += costs.spread_at(entry) + costs.slippage_at(entry)
         loss_per_lot = distance * spec.value_per_point
         if costs is not None:
             loss_per_lot += 2 * costs.commission_per_lot  # round trip

@@ -40,6 +40,9 @@ class MT5Client:
         self.path = path
         self._mt5 = mt5_module
         self.connected = False
+        # The account the bot is meant to trade: the configured login, or the
+        # account found at the first successful connection.
+        self.expected_login: int | None = int(login) if login else None
 
     @property
     def mt5(self) -> ModuleType:
@@ -68,14 +71,36 @@ class MT5Client:
         account = mt5.account_info()
         if account is None:
             raise MT5Error(f"not logged in to a trading account: {mt5.last_error()}")
+        if self.expected_login is None:
+            self.expected_login = int(account.login)
+        self._check_account(account)
         self.connected = True
         log.info("Connected to MT5: account %s on %s (%s)", account.login, account.server, account.currency)
 
     def ensure(self) -> None:
-        """Reconnect if the terminal connection was lost."""
-        if not self.connected or self.mt5.terminal_info() is None:
+        """Reconnect if needed and make sure the terminal is usable and on the right account.
+
+        Raises MT5Error (instead of trading) when the terminal has lost its trade
+        server connection or has been switched to another account: every
+        MetaTrader5 call works on whatever account the terminal shows right now.
+        """
+        info = self.mt5.terminal_info() if self.connected else None
+        if info is None:
             self.connected = False
             self.connect()
+            info = self.mt5.terminal_info()
+        if info is not None and not getattr(info, "connected", True):
+            raise MT5Error("the MT5 terminal is not connected to the trade server")
+        self._check_account(self.mt5.account_info())
+
+    def _check_account(self, account) -> None:
+        if account is None:
+            raise MT5Error(f"not logged in to a trading account: {self.mt5.last_error()}")
+        if self.expected_login is not None and int(account.login) != self.expected_login:
+            raise MT5Error(
+                f"the MT5 terminal is logged into account {account.login}, not {self.expected_login}: "
+                "refusing to trade until it is switched back"
+            )
 
     def shutdown(self) -> None:
         if self._mt5 is not None and self.connected:

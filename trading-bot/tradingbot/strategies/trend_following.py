@@ -47,6 +47,10 @@ class TrendFollowing(Strategy):
             raise ValueError("stop_atr must be > 0")
         if p["exit_threshold"] > p["entry_threshold"]:
             raise ValueError("exit_threshold must be <= entry_threshold")
+        if int(p["atr_period"]) < 1:
+            raise ValueError("atr_period must be >= 1")
+        if p["trail_atr"] < 0 or p["trail_min_step_atr"] < 0:
+            raise ValueError("trail_atr and trail_min_step_atr must be >= 0")
 
     @property
     def warmup_bars(self) -> int:

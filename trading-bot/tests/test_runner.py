@@ -96,7 +96,8 @@ def test_stop_hit_in_paper_is_reported(tmp_path, scripted_registered):
 
 def test_daily_loss_closes_positions(tmp_path, scripted_registered):
     # The stop is moved far away, then a crash takes equity through the 2% daily limit.
-    rows = [(100, 101, 99, 100), (100, 101, 99.5, 100), (45, 46, 44, 45), (45, 46, 44, 45)]
+    # Replay quotes are the next bar's open: the crash is seen at the poll after bar 2.
+    rows = [(100, 101, 99, 100), (100, 101, 99.5, 100), (100, 101, 99.5, 100), (45, 46, 44, 45), (45, 46, 44, 45)]
     cfg, feed, broker, clock = build(
         tmp_path, {0: ("long", 50, 200), 1: ("modify", 10, 200)}, rows,
         limits={"risk_per_trade_pct": 2.0, "daily_loss_limit_pct": 2.0, "max_trade_risk_share_of_daily": 1.0},

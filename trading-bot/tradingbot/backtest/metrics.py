@@ -43,13 +43,17 @@ def deflated_sharpe(
 
     kurtosis is the raw (Pearson) kurtosis, 3 for a normal distribution.
     sr_variance is the variance of the per-period Sharpe ratios across the
-    trials that were run (e.g. all parameter sets of a sweep).
+    trials that were run (e.g. all parameter sets of a sweep). When it is not
+    known (hand-tested variants), the variance of the Sharpe estimator under
+    the null of no skill, 1 / (n_obs - 1), is used.
     """
     if n_obs < 3 or not math.isfinite(sr):
         return float("nan")
     norm = NormalDist()
     sr0 = 0.0
-    if n_trials > 1 and sr_variance > 0:
+    if n_trials > 1 and not sr_variance > 0:
+        sr_variance = 1 / (n_obs - 1)
+    if n_trials > 1:
         sr0 = math.sqrt(sr_variance) * (
             (1 - EULER_GAMMA) * norm.inv_cdf(1 - 1 / n_trials)
             + EULER_GAMMA * norm.inv_cdf(1 - 1 / (n_trials * math.e))
@@ -81,17 +85,25 @@ def compute_metrics(
         return m
     rets = daily_returns(equity, initial_balance)
     final = float(equity.iloc[-1])
-    years = max((equity.index[-1] - equity.index[0]).days / 365.25, 1e-9)
+    years = (equity.index[-1] - equity.index[0]).total_seconds() / (365.25 * 86400)
+    # Annualised figures are meaningless (and overflow) on a few days of data.
+    annualise = years >= 30 / 365.25
 
     m["start"] = str(equity.index[0].date())
     m["end"] = str(equity.index[-1].date())
     m["final_equity"] = round(final, 2)
     m["total_return_pct"] = round((final / initial_balance - 1) * 100, 2)
-    m["cagr_pct"] = round(((final / initial_balance) ** (1 / years) - 1) * 100, 2) if final > 0 else -100.0
+    if not annualise:
+        m["cagr_pct"] = float("nan")
+    elif final > 0:
+        m["cagr_pct"] = round(((final / initial_balance) ** (1 / years) - 1) * 100, 2)
+    else:
+        m["cagr_pct"] = -100.0
     m["max_drawdown_pct"] = round(max_drawdown(pd.concat([pd.Series([initial_balance]), equity.reset_index(drop=True)])) * 100, 2)
 
     sr = sharpe_per_period(rets)
-    downside = rets[rets < 0].std(ddof=1)
+    # Downside deviation: root mean square of the negative part of all returns.
+    downside = math.sqrt(float((np.minimum(rets, 0.0) ** 2).mean())) if len(rets) > 1 else float("nan")
     m["sharpe"] = round(sr * math.sqrt(TRADING_DAYS), 3) if math.isfinite(sr) else float("nan")
     m["sortino"] = (
         round(rets.mean() / downside * math.sqrt(TRADING_DAYS), 3) if downside and math.isfinite(downside) else float("nan")
@@ -119,7 +131,7 @@ def compute_metrics(
         m["total_costs"] = round(float(sum(t.commission - t.swap for t in trades)), 2)
         hold = [(t.exit_time - t.entry_time).total_seconds() / 86400 for t in trades]
         m["avg_hold_days"] = round(float(np.mean(hold)), 2)
-        m["trades_per_year"] = round(len(trades) / years, 1)
+        m["trades_per_year"] = round(len(trades) / years, 1) if annualise else float("nan")
     if in_position is not None and len(in_position):
         m["exposure_pct"] = round(float(in_position.mean() * 100), 1)
     return m

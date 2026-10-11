@@ -15,10 +15,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -49,11 +50,89 @@ def setup_logging(log_dir: str | None = None, verbose: bool = False, quiet: bool
         handlers=handlers,
         force=True,
     )
+    # urllib3 logs request URLs at DEBUG level, and Telegram URLs contain the bot token.
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def _bt_config(cfg: BotConfig, symbol: str) -> BacktestConfig:
     inst = cfg.instruments[symbol]
     return BacktestConfig(spec=inst.spec, costs=inst.costs, limits=cfg.limits, initial_balance=cfg.initial_balance)
+
+
+def _strategy(name: str, params: dict):
+    try:
+        return create_strategy(name, params)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _json_params(text: str | None) -> dict:
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"--params is not valid JSON ({exc}). Example: --params '{{\"leverage\": 1.0}}' "
+                          "(Windows cmd: --params \"{\\\"leverage\\\": 1.0}\")") from exc
+    if not isinstance(value, dict):
+        raise ConfigError("--params must be a JSON object, e.g. {\"leverage\": 1.0}")
+    return value
+
+
+def _load_with_warmup(path: str, start: str | None, end: str | None, warmup: int) -> tuple[pd.DataFrame, pd.Timestamp | None]:
+    """Bars for a backtest that trades from `start`, keeping `warmup` earlier bars for the indicators."""
+    try:
+        bars = load_bars_csv(path, None, end)
+    except (OSError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if not start:
+        return bars, None
+    trade_from = pd.Timestamp(start)
+    first = int(bars.index.searchsorted(trade_from))
+    if first >= len(bars):
+        raise ConfigError(f"{path}: no bars after --start {start}")
+    if first < warmup:
+        print(f"note: only {first} bars before --start; the strategy needs {warmup} to warm up, "
+              f"so trading starts at bar {warmup} ({bars.index[min(warmup, len(bars) - 1)].date()})")
+    return bars.iloc[max(0, first - warmup):], trade_from
+
+
+def _clean(value):
+    """JSON-safe copy: NaN / infinity become null (strict JSON has no NaN)."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(k): _clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean(v) for v in value]
+    return value
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(_clean(data), indent=2, default=str), encoding="utf-8")
+
+
+def _print_events(events: list[str], limit: int = 30) -> None:
+    if not events:
+        return
+    print(f"\nRisk events ({len(events)}):")
+    if len(events) <= limit:
+        shown = events
+    else:
+        head, tail = events[:10], events[-10:]
+        kills = [e for e in events[10:-10] if "KILLED" in e]
+        shown = head + [f"... {len(events) - 20 - len(kills)} more ..."] + kills + tail
+    for e in shown:
+        print("  " + e)
+
+
+def _mc_report(trades, cfg: BotConfig) -> dict:
+    mc = monte_carlo(trades, dd_limit_pct=cfg.limits.max_drawdown_pct)
+    mode = cfg.limits.drawdown_mode
+    if "note" not in mc:
+        mc["max_loss_rule"] = (f"{mode}: the firm measures the {cfg.limits.max_drawdown_pct:g}% from "
+                               + ("the starting balance" if mode == "static" else "the equity peak"))
+    return mc
 
 
 def _report_dir(base: str, name: str) -> Path:
@@ -100,28 +179,30 @@ def cmd_demo(args) -> int:
 def cmd_backtest(args) -> int:
     cfg = load_config(args.config)
     slot = cfg.slot(args.slot)
-    bars = load_bars_csv(args.data, args.start, args.end)
-    params = {**slot.params, **json.loads(args.params or "{}")}
-    strat = create_strategy(slot.strategy, params)
-    res = run_backtest(bars, strat, _bt_config(cfg, slot.symbol), cfg.instruments[slot.symbol].broker_symbol)
+    if args.trials < 1:
+        raise ConfigError("--trials must be >= 1")
+    strat = _strategy(slot.strategy, {**slot.params, **_json_params(args.params)})
+    bars, trade_from = _load_with_warmup(args.data, args.start, args.end, strat.warmup_bars)
+    bt = replace(_bt_config(cfg, slot.symbol), trade_from=trade_from)
+    res = run_backtest(bars, strat, bt, cfg.instruments[slot.symbol].broker_symbol)
     metrics = res.metrics(n_trials=args.trials)
     print(f"== {slot.id}: {slot.strategy} on {args.data} ==")
     print(f"params: {strat.params}")
+    if res.start is not None:
+        print(f"metrics from {res.start.date()}: the first {strat.warmup_bars} bars only warm up the indicators")
     print(format_metrics(metrics))
-    mc = monte_carlo(res.trades, dd_limit_pct=cfg.limits.max_drawdown_pct)
-    print("\nMonte Carlo (trade resampling):")
+    mc = _mc_report(res.trades, cfg)
+    print("\nMonte Carlo (trade resampling, closed trades only):")
     for k, v in mc.items():
         print(f"  {k}: {v}")
-    if res.risk_events:
-        print("\nRisk events:")
-        for e in res.risk_events[:20]:
-            print("  " + e)
+    _print_events(res.risk_events)
     out = _report_dir(args.out, slot.id)
     res.trades_frame().to_csv(out / "trades.csv", index=False)
     res.equity.to_csv(out / "equity.csv")
-    (out / "metrics.json").write_text(json.dumps({"params": strat.params, "metrics": metrics, "monte_carlo": mc},
-                                                 indent=2, default=str))
-    _plot(res.equity, out / "equity.png", f"{slot.id} equity")
+    (out / "risk_events.txt").write_text("\n".join(res.risk_events + ["", "skipped:"] + res.skipped), encoding="utf-8")
+    _write_json(out / "metrics.json", {"params": strat.params, "metrics": metrics, "monte_carlo": mc,
+                                       "risk_events": res.risk_events})
+    _plot(res.tradable_equity(), out / "equity.png", f"{slot.id} equity")
     print(f"\nReport: {out}")
     return 0
 
@@ -129,26 +210,33 @@ def cmd_backtest(args) -> int:
 def cmd_walkforward(args) -> int:
     cfg = load_config(args.config)
     slot = cfg.slot(args.slot)
-    bars = load_bars_csv(args.data, args.start, args.end)
+    try:
+        bars = load_bars_csv(args.data, args.start, args.end)
+    except (OSError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
     wf = cfg.walkforward
     print(f"== Walk-forward {slot.id}: {len(bars)} bars, IS {wf['in_sample_bars']} / OOS {wf['out_sample_bars']}, "
           f"grid {slot.grid or '{}'} ==")
-    res = walk_forward(
-        bars, slot.strategy, slot.params, slot.grid, _bt_config(cfg, slot.symbol),
-        int(wf["in_sample_bars"]), int(wf["out_sample_bars"]), wf["objective"], int(wf["min_trades"]),
-        cfg.instruments[slot.symbol].broker_symbol,
-    )
+    try:
+        res = walk_forward(
+            bars, slot.strategy, slot.params, slot.grid, _bt_config(cfg, slot.symbol),
+            int(wf["in_sample_bars"]), int(wf["out_sample_bars"]), wf["objective"], int(wf["min_trades"]),
+            cfg.instruments[slot.symbol].broker_symbol,
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     print(res.folds_frame().to_string(index=False))
-    print("\nStitched out-of-sample result:")
+    print("\nOut-of-sample result (all folds traded on one account):")
     print(format_metrics(res.metrics))
-    mc = monte_carlo(res.trades, dd_limit_pct=cfg.limits.max_drawdown_pct)
+    mc = _mc_report(res.trades, cfg)
     print("\nMonte Carlo (OOS trades):")
     for k, v in mc.items():
         print(f"  {k}: {v}")
+    _print_events(res.risk_events)
     out = _report_dir(args.out, f"{slot.id}-wf")
     res.folds_frame().to_csv(out / "folds.csv", index=False)
     res.equity.to_csv(out / "oos_equity.csv")
-    (out / "metrics.json").write_text(json.dumps({"metrics": res.metrics, "monte_carlo": mc}, indent=2, default=str))
+    _write_json(out / "metrics.json", {"metrics": res.metrics, "monte_carlo": mc, "risk_events": res.risk_events})
     _plot(res.equity, out / "oos_equity.png", f"{slot.id} walk-forward OOS equity")
     print(f"\nReport: {out}")
     dsr = res.metrics.get("dsr", float("nan"))
@@ -167,13 +255,21 @@ def cmd_download(args) -> int:
     else:
         from .data.feeds import MT5Feed
 
-        feed = MT5Feed(_mt5_client({}))
-        start = pd.Timestamp(args.start)
-        end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now()
-        df = feed.history(args.symbol, args.timeframe, start, end)
-        feed.client.shutdown()
-    save_bars_csv(df, out)
-    print(f"{len(df)} bars {df.index[0]} -> {df.index[-1]} saved to {out}")
+        mt5_cfg = load_config(args.config).mt5 if Path(args.config).exists() else {}
+        feed = MT5Feed(_mt5_client(mt5_cfg))
+        try:
+            feed.client.connect()
+            df = feed.history(args.symbol, args.timeframe, pd.Timestamp(args.start),
+                              pd.Timestamp(args.end) if args.end else None)
+        finally:
+            feed.client.shutdown()
+    if df is None or df.empty:
+        print(f"no bars returned for {args.symbol}; {out} was not written", file=sys.stderr)
+        return 1
+    tmp = out.with_name(out.name + ".tmp")
+    save_bars_csv(df, tmp)
+    os.replace(tmp, out)
+    print(f"{len(df)} closed bars {df.index[0]} -> {df.index[-1]} saved to {out}")
     return 0
 
 
@@ -181,47 +277,97 @@ def _mt5_client(mt5_cfg: dict):
     from .mt5_client import MT5Client
 
     login = os.environ.get("MT5_LOGIN")
+    try:
+        login_id = int(login) if login else None
+    except ValueError as exc:
+        raise ConfigError(f"MT5_LOGIN must be the account number, got {login!r}") from exc
     return MT5Client(
-        login=int(login) if login else None,
+        login=login_id,
         password=os.environ.get("MT5_PASSWORD"),
         server=os.environ.get("MT5_SERVER"),
         path=mt5_cfg.get("path") or os.environ.get("MT5_PATH"),
     )
 
 
+def _history_seeds(cfg: BotConfig) -> dict[str, pd.DataFrame]:
+    """Older daily bars per broker symbol (instruments.*.history_csv)."""
+    seeds = {}
+    for name, inst in cfg.instruments.items():
+        if inst.history_csv:
+            try:
+                seeds[inst.broker_symbol] = load_bars_csv(inst.history_csv)
+            except (OSError, ValueError) as exc:
+                raise ConfigError(f"instruments.{name}.history_csv: {exc}") from exc
+    return seeds
+
+
+def _live_feed(cfg: BotConfig, client):
+    from .data.feeds import MT5Feed, SeededFeed
+
+    feed = MT5Feed(client)
+    seeds = _history_seeds(cfg)
+    return SeededFeed(feed, seeds) if seeds else feed
+
+
 def cmd_check(args) -> int:
     cfg = load_config(args.config)
-    print(f"Config OK. Prop firm preset: {cfg.prop_firm}")
+    print(f"Config OK. Prop firm preset: {cfg.prop_firm}, account size {cfg.initial_balance:,.2f} {cfg.currency}")
     lim = cfg.limits
     print(f"Risk/trade {lim.risk_per_trade_pct}% | daily stop {lim.daily_loss_limit_pct}% | max DD {lim.max_drawdown_pct}% "
-          f"({lim.drawdown_mode}) | weekend close: {lim.close_before_weekend}")
+          f"({lim.drawdown_mode}) | weekend close: {lim.close_before_weekend} | max exposure {lim.max_exposure}x")
     for note in cfg.firm_notes:
         print(f"  note: {note}")
     for s in cfg.slots:
-        print(f"  slot {s.id}: {s.strategy} {s.symbol} {s.timeframe} magic {s.magic} {'ON' if s.enabled else 'off'}")
+        warm = _strategy(s.strategy, s.params).warmup_bars
+        print(f"  slot {s.id}: {s.strategy} {s.symbol} {s.timeframe} magic {s.magic} "
+              f"{'ON' if s.enabled else 'off'} (needs {warm} closed bars)")
+    seeds = _history_seeds(cfg)
+    for symbol, df in seeds.items():
+        print(f"  history_csv for {symbol}: {len(df)} bars {df.index[0].date()} -> {df.index[-1].date()}")
     telegram = bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
     print(f"Telegram: {'configured' if telegram else 'not configured (alerts only in the log)'}")
-    if cfg.broker["type"] != "mt5":
-        print("broker.type is paper: no MT5 connection test.")
-        return 0
+    live = cfg.broker["type"] == "mt5"
+    print(f"Broker: {cfg.broker['type']}" + (f", orders allowed by config: {cfg.broker['allow_orders']}" if live else
+                                             " (simulated orders, live MT5 prices)"))
 
-    from .brokers.mt5_broker import MT5Broker
+    from .mt5_client import MT5Error
 
     client = _mt5_client(cfg.mt5)
-    client.connect()
-    broker = MT5Broker(client)
-    info = client.mt5.account_info()
-    mode = {0: "DEMO", 1: "CONTEST", 2: "REAL"}.get(getattr(info, "trade_mode", -1), "?")
-    print(f"MT5 account {info.login} on {info.server} [{mode}] balance {info.balance} {info.currency}")
-    terminal = client.mt5.terminal_info()
-    print(f"Algo Trading enabled in terminal: {getattr(terminal, 'trade_allowed', '?')}")
-    for name, inst in cfg.instruments.items():
-        spec = broker.spec(inst.broker_symbol)
-        q = broker.quote(inst.broker_symbol)
-        print(f"  {name} -> {inst.broker_symbol}: value/point/lot {spec.value_per_point:g} (config {inst.spec.value_per_point:g}), "
-              f"lots {spec.volume_min}-{spec.volume_max} step {spec.volume_step}, bid {q.bid} ask {q.ask} spread {q.ask - q.bid:.2f}")
-    client.shutdown()
-    return 0
+    try:
+        client.connect()
+    except MT5Error as exc:
+        print(f"MT5 connection test FAILED: {exc}")
+        return 1
+    try:
+        from .brokers.mt5_broker import MT5Broker
+
+        broker = MT5Broker(client, cfg.broker["deviation_points"], cfg.broker["filling"])
+        info = client.mt5.account_info()
+        mode = {0: "DEMO", 1: "CONTEST", 2: "REAL"}.get(getattr(info, "trade_mode", -1), "?")
+        print(f"MT5 account {info.login} on {info.server} [{mode}] balance {info.balance} {info.currency}")
+        if abs(float(info.balance) - cfg.initial_balance) > 0.25 * cfg.initial_balance:
+            print(f"  WARNING: balance differs a lot from account.initial_balance {cfg.initial_balance:,.2f}")
+        terminal = client.mt5.terminal_info()
+        print(f"Algo Trading enabled in terminal: {getattr(terminal, 'trade_allowed', '?')}")
+        for name, inst in cfg.instruments.items():
+            spec = broker.spec(inst.broker_symbol)
+            q = broker.quote(inst.broker_symbol)
+            print(f"  {name} -> {inst.broker_symbol}: value/point/lot {spec.value_per_point:g} "
+                  f"(config {inst.spec.value_per_point:g}), lots {spec.volume_min}-{spec.volume_max} "
+                  f"step {spec.volume_step}, bid {q.bid} ask {q.ask} spread {q.ask - q.bid:.2f}")
+        feed = _live_feed(cfg, client)
+        ok = True
+        for s in (s for s in cfg.slots if s.enabled):
+            warm = _strategy(s.strategy, s.params).warmup_bars
+            symbol = cfg.instruments[s.symbol].broker_symbol
+            have = len(feed.bars(symbol, s.timeframe, warm + 50))
+            enough = have >= warm
+            ok &= enough
+            print(f"  history {s.id}: {have} closed {s.timeframe} bars, needs {warm}: "
+                  + ("OK" if enough else f"NOT ENOUGH: set instruments.{s.symbol}.history_csv (README)"))
+    finally:
+        client.shutdown()
+    return 0 if ok else 1
 
 
 def _build_alerts(cfg: BotConfig):
@@ -233,38 +379,95 @@ def _build_alerts(cfg: BotConfig):
                   prefix=cfg.alerts.get("prefix", "[bot] "))
 
 
+def _disable_quick_edit() -> None:
+    """Windows: a click in a console with QuickEdit on pauses the program at its next print."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # Clear ENABLE_QUICK_EDIT_MODE (0x40), keep ENABLE_EXTENDED_FLAGS (0x80) set.
+            kernel32.SetConsoleMode(handle, (mode.value & ~0x40) | 0x80)
+    except Exception:  # not a console (Task Scheduler without a window): nothing to do
+        pass
+
+
 def cmd_run(args) -> int:
     from .brokers.paper import PaperBroker
-    from .data.feeds import MT5Feed
     from .runner import BotRunner
 
     cfg = load_config(args.config)
+    _disable_quick_edit()
     setup_logging(cfg.runtime.log_dir, args.verbose)
-    client = _mt5_client(cfg.mt5)
-    client.connect()
-    feed = MT5Feed(client)
-    if cfg.broker["type"] == "mt5":
-        if not args.allow_orders:
-            print("broker.type is mt5: the bot will send real orders to the logged-in account.\n"
-                  "Run again with --allow-orders to confirm.")
-            return 2
-        from .brokers.mt5_broker import MT5Broker
+    alerts = _build_alerts(cfg)
+    if cfg.broker["type"] == "mt5" and not (args.allow_orders or cfg.broker["allow_orders"]):
+        msg = ("broker.type is mt5 but orders are not confirmed: the bot did NOT start. "
+               "Run with --allow-orders or set broker.allow_orders: true in the config.")
+        log.error(msg)
+        alerts.send("Το bot ΔΕΝ ξεκίνησε: " + msg)
+        alerts.close()
+        return 2
+    client = None
+    try:
+        client = _mt5_client(cfg.mt5)
+        client.connect()
+        feed = _live_feed(cfg, client)
+        if cfg.broker["type"] == "mt5":
+            from .brokers.mt5_broker import MT5Broker
 
-        broker = MT5Broker(client, cfg.broker["deviation_points"], cfg.broker["filling"])
-        info = client.mt5.account_info()
-        if getattr(info, "trade_mode", None) == 2:
-            log.warning("REAL MONEY ACCOUNT %s", info.login)
-    else:
-        broker = PaperBroker(
-            {i.broker_symbol: i.spec for i in cfg.instruments.values()},
-            {i.broker_symbol: i.costs for i in cfg.instruments.values()},
-            cfg.initial_balance,
-            Path(cfg.runtime.state_dir) / "paper_account.json",
-            quote_source=feed.quote,
-            currency=cfg.currency,
-        )
-    BotRunner(cfg, feed, broker, _build_alerts(cfg)).run_forever()
+            broker = MT5Broker(client, cfg.broker["deviation_points"], cfg.broker["filling"])
+            info = client.mt5.account_info()
+            if getattr(info, "trade_mode", None) == 2:
+                log.warning("REAL MONEY ACCOUNT %s", info.login)
+        else:
+            broker = PaperBroker(
+                {i.broker_symbol: i.spec for i in cfg.instruments.values()},
+                {i.broker_symbol: i.costs for i in cfg.instruments.values()},
+                cfg.initial_balance,
+                Path(cfg.runtime.state_dir) / "paper_account.json",
+                quote_source=feed.quote,
+                currency=cfg.currency,
+            )
+        runner = BotRunner(cfg, feed, broker, alerts)
+    except Exception as exc:  # report why the bot is not running, then let run_bot.bat retry
+        log.exception("startup failed")
+        alerts.send(f"Το bot ΔΕΝ ξεκίνησε: {type(exc).__name__}: {exc}")
+        alerts.close()
+        if client is not None:
+            client.shutdown()
+        return 2 if isinstance(exc, ConfigError) else 1
+    runner.run_forever()
     return 0
+
+
+def _resolve_data_args(cfg: BotConfig, items: list[str] | None) -> dict[str, str]:
+    """--data SYMBOL=path: SYMBOL is a config instrument name or broker symbol (any case)."""
+    names = {}
+    for name, inst in cfg.instruments.items():
+        names[name.lower()] = name
+        names[inst.broker_symbol.lower()] = name
+    files: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ConfigError(f"--data {item!r}: expected SYMBOL=path.csv")
+        key, path = item.split("=", 1)
+        name = names.get(key.strip().lower())
+        if name is None:
+            raise ConfigError(f"--data {key!r} is not an instrument of the config ({sorted(cfg.instruments)})")
+        files[name] = path
+    return files
+
+
+def _bar_spacing_ok(df: pd.DataFrame, timeframe: str) -> bool:
+    minutes = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440, "W1": 10080}[timeframe]
+    if len(df) < 3:
+        return True
+    step = pd.Series(df.index).diff().dropna().median() / pd.Timedelta(minutes=1)
+    return 0.5 * minutes <= step <= 2 * minutes
 
 
 def cmd_dryrun(args) -> int:
@@ -279,44 +482,94 @@ def cmd_dryrun(args) -> int:
     cfg.runtime = replace(cfg.runtime, state_dir=str(workdir / "state"), log_dir=str(workdir / "logs"),
                           kill_switch_file=str(workdir / "KILL_SWITCH"))
     setup_logging(None, args.verbose, quiet=True)
+    # Every dry run starts from a clean account: an earlier run's kill or open
+    # positions must not carry over.
+    for leftover in (workdir / "state" / "bot_state.json", workdir / "state" / "RESET_KILL",
+                     workdir / "logs" / "trades.csv"):
+        leftover.unlink(missing_ok=True)
 
-    files = dict(item.split("=", 1) for item in args.data or [])
+    files = _resolve_data_args(cfg, args.data)
+    enabled = [s for s in cfg.slots if s.enabled]
     data: dict[str, pd.DataFrame] = {}
-    for slot in cfg.slots:
-        if not slot.enabled:
-            continue
+    timeframes: dict[str, str] = {}
+    for slot in enabled:
         inst = cfg.instruments[slot.symbol]
+        if timeframes.setdefault(inst.broker_symbol, slot.timeframe) != slot.timeframe:
+            raise ConfigError(f"dryrun replays one bar series per symbol: {inst.broker_symbol} has slots on "
+                              f"{timeframes[inst.broker_symbol]} and {slot.timeframe}; disable one of them")
         if inst.broker_symbol in data:
             continue
         if slot.symbol in files:
-            data[inst.broker_symbol] = load_bars_csv(files[slot.symbol])
+            try:
+                data[inst.broker_symbol] = load_bars_csv(files[slot.symbol])
+            except (OSError, ValueError) as exc:
+                raise ConfigError(str(exc)) from exc
+            source = files[slot.symbol]
         else:
             data[inst.broker_symbol] = make_bars(n=args.bars, start_price=18000 if "100" in slot.symbol else 5000,
                                                  seed=sum(map(ord, slot.symbol)))
-    spreads = {i.broker_symbol: i.costs.spread for i in cfg.instruments.values()}
-    warmup = max(create_strategy(s.strategy, s.params).warmup_bars for s in cfg.slots if s.enabled) + 1
-    feed = ReplayFeed(data, start=warmup, spread=spreads)
+            source = f"synthetic {args.bars} bars"
+        print(f"{slot.symbol} ({inst.broker_symbol}): {source}")
+        if not _bar_spacing_ok(data[inst.broker_symbol], slot.timeframe):
+            print(f"  WARNING: these bars do not look like {slot.timeframe} bars (slot {slot.id})")
+    unused = set(files) - {s.symbol for s in enabled}
+    if unused:
+        print(f"note: no enabled slot trades {sorted(unused)}; those files are not used")
+    costs = {i.broker_symbol: i.costs for i in cfg.instruments.values()}
+    warmup = max(_strategy(s.strategy, s.params).warmup_bars for s in enabled) + 1
+    if warmup >= min(len(d) for d in data.values()):
+        raise ConfigError(f"need more than {warmup} bars for the warm-up")
+    feed = ReplayFeed(data, start=warmup, costs=costs)
     broker = PaperBroker(
         {i.broker_symbol: i.spec for i in cfg.instruments.values()},
-        {i.broker_symbol: i.costs for i in cfg.instruments.values()},
+        costs,
         cfg.initial_balance,
         quote_source=feed.quote,
         currency=cfg.currency,
     )
 
+    # The replay clock: just after the next bar opened (the live bot sees a bar
+    # once the next one has started, and trades at that open), or the end of a
+    # bar before a weekend (weekend close at that bar's close).
+    override: list[datetime] = []
+
     def clock() -> datetime:
+        if override:
+            return override[-1]
         t = max(feed.quote(s).time for s in data)
-        return (t + timedelta(hours=23, minutes=59)).to_pydatetime().replace(tzinfo=timezone.utc)
+        return (t + pd.Timedelta(minutes=1)).to_pydatetime().replace(tzinfo=timezone.utc)
+
+    def weekend_poll_time() -> datetime | None:
+        for df in data.values():
+            i = min(feed.cursor, len(df)) - 1
+            if i + 1 >= len(df):
+                continue
+            cur, nxt = df.index[i], df.index[i + 1]
+            days = (nxt.normalize() - cur.normalize()).days
+            if any((cur.weekday() + k) % 7 == 5 for k in range(1, days + 1)):
+                spacing = pd.Series(df.index[max(0, i - 20): i + 1]).diff().median()
+                spacing = spacing if spacing == spacing else pd.Timedelta(days=1)
+                end = min(cur + spacing, cur.normalize() + pd.Timedelta(days=1)) - pd.Timedelta(minutes=1)
+                return end.to_pydatetime().replace(tzinfo=timezone.utc)
+        return None
 
     runner = BotRunner(cfg, feed, broker, Alerts(), clock=clock)
     steps = 0
     while True:
+        when = weekend_poll_time() if cfg.limits.close_before_weekend else None
+        if when is not None:
+            override.append(when)
+            feed.at_close = True
+            runner.step()
+            feed.at_close = False
+            override.clear()
+            steps += 1
         runner.step()
         steps += 1
         if not feed.advance():
             break
     acct = broker.account()
-    print(f"Dry run: {steps} polls over {min(len(d) for d in data.values())} bars")
+    print(f"Dry run: {steps} polls over {min(len(d) for d in data.values()) - warmup} bars")
     print(f"Paper balance {acct.balance:.2f}, equity {acct.equity:.2f} (start {cfg.initial_balance:.2f})")
     print(f"Risk state: killed={runner.risk.state.killed} {runner.risk.state.kill_reason}")
     print(f"Journal: {runner.journal_path}")
@@ -324,20 +577,32 @@ def cmd_dryrun(args) -> int:
 
 
 def cmd_reset_kill(args) -> int:
+    """Leave a reset request for the bot. The running bot owns its state file and applies it at its next poll."""
+    from .runner import RESET_FILE
+
     cfg = load_config(args.config)
-    path = Path(cfg.runtime.state_dir) / "bot_state.json"
-    if not path.exists():
-        print("no state file, nothing to reset")
-        return 0
-    state = json.loads(path.read_text(encoding="utf-8"))
-    print(f"was killed: {state['risk']['killed']} ({state['risk']['kill_reason']})")
-    state["risk"]["killed"] = False
-    state["risk"]["kill_reason"] = ""
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    state_dir = Path(cfg.runtime.state_dir)
+    path = state_dir / "bot_state.json"
+    if path.exists():
+        risk = json.loads(path.read_text(encoding="utf-8")).get("risk", {})
+        print(f"current state: killed={risk.get('killed')} ({risk.get('kill_reason') or '-'}), "
+              f"initial balance {risk.get('initial_balance')}")
+    else:
+        print("no state file yet: the request applies when the bot starts")
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = state_dir / (RESET_FILE + ".tmp")
+    tmp.write_text("rebase" if args.rebase else "reset", encoding="utf-8")
+    os.replace(tmp, state_dir / RESET_FILE)
+    if args.rebase:
+        print(f"re-base requested: initial balance {cfg.initial_balance:,.2f} from the config, peak and day "
+              "reference from the current equity, account = the logged-in one.")
+    else:
+        print("kill reset requested. It is refused if equity is still below the max-drawdown floor "
+              "(use --rebase for a new or reset account).")
     kill_file = Path(cfg.runtime.kill_switch_file)
     if kill_file.exists():
-        print(f"remove {kill_file} too, otherwise the bot stops again on start")
-    print("kill state cleared")
+        print(f"remove {kill_file} too, otherwise the bot stops again at once")
+    print("The running bot applies it within one poll (or at its next start) and confirms on Telegram.")
     return 0
 
 
@@ -345,29 +610,33 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tradingbot", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
+    # -v also works after the command (python -m tradingbot run -v).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
     def with_config(sp):
         sp.add_argument("-c", "--config", default="config/config.yaml")
         return sp
 
-    d = sub.add_parser("demo", help="backtest on synthetic data")
+    d = sub.add_parser("demo", help="backtest on synthetic data", parents=[common])
     d.add_argument("--seed", type=int, default=42)
     d.set_defaults(func=cmd_demo)
 
     for name, func in (("backtest", cmd_backtest), ("walkforward", cmd_walkforward)):
-        sp = with_config(sub.add_parser(name))
+        sp = with_config(sub.add_parser(name, parents=[common]))
         sp.add_argument("--slot", required=True, help="strategy id from the config")
         sp.add_argument("--data", required=True, help="CSV with OHLC bars")
-        sp.add_argument("--start")
+        sp.add_argument("--start", help="first date to trade (earlier bars are kept for the warm-up)"
+                        if name == "backtest" else "first date of the data to use")
         sp.add_argument("--end")
         sp.add_argument("--out", default="reports")
         if name == "backtest":
-            sp.add_argument("--params", help='JSON overrides, e.g. \'{"stop_atr": 2.5}\'')
+            sp.add_argument("--params", help='JSON overrides, e.g. \'{"leverage": 1.0}\'')
             sp.add_argument("--trials", type=int, default=1,
                             help="how many variants you tried so far (for the Deflated Sharpe)")
         sp.set_defaults(func=func)
 
-    dl = sub.add_parser("download")
+    dl = with_config(sub.add_parser("download", parents=[common]))
     dl.add_argument("--source", choices=("mt5", "yahoo"), required=True)
     dl.add_argument("--symbol", required=True, help="broker symbol (mt5) or US100/US500/ticker (yahoo)")
     dl.add_argument("--timeframe", default="D1")
@@ -376,19 +645,23 @@ def build_parser() -> argparse.ArgumentParser:
     dl.add_argument("--out", required=True)
     dl.set_defaults(func=cmd_download)
 
-    with_config(sub.add_parser("check")).set_defaults(func=cmd_check)
+    with_config(sub.add_parser("check", parents=[common])).set_defaults(func=cmd_check)
 
-    dr = with_config(sub.add_parser("dryrun"))
+    dr = with_config(sub.add_parser("dryrun", parents=[common]))
     dr.add_argument("--data", action="append", help="SYMBOL=path.csv (default: synthetic bars)")
     dr.add_argument("--bars", type=int, default=1500)
     dr.add_argument("--workdir", default="dryrun")
     dr.set_defaults(func=cmd_dryrun)
 
-    r = with_config(sub.add_parser("run"))
-    r.add_argument("--allow-orders", action="store_true", help="required when broker.type is mt5")
+    r = with_config(sub.add_parser("run", parents=[common]))
+    r.add_argument("--allow-orders", action="store_true",
+                   help="confirm real orders when broker.type is mt5 (or set broker.allow_orders: true)")
     r.set_defaults(func=cmd_run)
 
-    with_config(sub.add_parser("reset-kill")).set_defaults(func=cmd_reset_kill)
+    rk = with_config(sub.add_parser("reset-kill", parents=[common]))
+    rk.add_argument("--rebase", action="store_true",
+                    help="new or reset account: take initial balance, peak and account from now on")
+    rk.set_defaults(func=cmd_reset_kill)
     return p
 
 

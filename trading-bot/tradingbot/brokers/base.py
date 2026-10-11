@@ -14,6 +14,24 @@ class BrokerError(RuntimeError):
     pass
 
 
+class MarketClosedError(BrokerError):
+    """The order was rejected because the market (or the symbol's trade session) is closed."""
+
+
+class UnknownOutcomeError(BrokerError):
+    """The request may or may not have been executed (e.g. no reply from the server).
+
+    Never blindly resend a market order after this: reconcile with the open
+    positions first.
+    """
+
+
+@dataclass(frozen=True)
+class Fill:
+    price: float
+    volume: float
+
+
 @dataclass(frozen=True)
 class Quote:
     bid: float
@@ -27,6 +45,9 @@ class Broker(ABC):
     `magic` identifies the bot's own positions; positions opened by hand or by
     other EAs are never touched.
     """
+
+    # True for brokers that simulate stops / swaps from bars (see on_bars).
+    simulated = False
 
     @abstractmethod
     def account(self) -> AccountInfo: ...
@@ -46,8 +67,8 @@ class Broker(ABC):
     ) -> Position: ...
 
     @abstractmethod
-    def close(self, position: Position, comment: str = "", volume: float | None = None) -> float:
-        """Close the position (or `volume` lots of it) at market. Returns the fill price."""
+    def close(self, position: Position, comment: str = "", volume: float | None = None) -> Fill:
+        """Close the position (or `volume` lots of it) at market. Returns the price and the lots closed."""
 
     @abstractmethod
     def modify(self, position: Position, sl: float | None, tp: float | None) -> None: ...

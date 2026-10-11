@@ -25,6 +25,9 @@ class Instrument:
     broker_symbol: str
     spec: InstrumentSpec
     costs: CostModel
+    # Optional CSV with older daily bars of the same market, used when the broker's
+    # history is shorter than a strategy's warm-up (see data.feeds.SeededFeed).
+    history_csv: str | None = None
 
 
 @dataclass
@@ -73,25 +76,64 @@ class BotConfig:
 
 
 def load_env_file(path: str | Path = ".env") -> None:
-    """Minimal .env loader: KEY=VALUE lines, existing env vars win."""
+    """Minimal .env loader: KEY=VALUE lines; existing environment variables win.
+
+    Handles a UTF-8 BOM, an optional 'export ' prefix, matching quotes around the
+    value, and ' #' comments after unquoted values.
+    """
     path = Path(path)
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        if key:
+            os.environ.setdefault(key, value)
 
 
 def _build(cls, raw: dict | None, where: str):
     raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: expected a mapping, got {raw!r}")
     allowed = {f.name for f in fields(cls)}
     unknown = set(raw) - allowed
     if unknown:
         raise ConfigError(f"{where}: unknown key(s) {sorted(unknown)}; allowed: {sorted(allowed)}")
-    return cls(**raw)
+    try:
+        return cls(**raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{where}: {exc}") from exc
+
+
+def _check_keys(raw: dict, allowed: set[str], where: str) -> None:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: expected a mapping, got {raw!r}")
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ConfigError(f"{where}: unknown key(s) {sorted(unknown)}; allowed: {sorted(allowed)}")
+
+
+def _number(value, where: str, minimum: float | None = None, integer: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{where} must be a number, got {value!r}")
+    if integer and int(value) != value:
+        raise ConfigError(f"{where} must be a whole number, got {value!r}")
+    if minimum is not None and value < minimum:
+        raise ConfigError(f"{where} must be >= {minimum}, got {value!r}")
+    return value
+
+
+TOP_LEVEL = {"account", "risk", "instruments", "strategies", "walkforward", "broker", "mt5", "runtime", "alerts"}
 
 
 def load_config(path: str | Path) -> BotConfig:
@@ -103,11 +145,15 @@ def load_config(path: str | Path) -> BotConfig:
 
 
 def parse_config(raw: dict) -> BotConfig:
-    account = raw.get("account", {})
+    _check_keys(raw, TOP_LEVEL, "config")
+    account = raw.get("account") or {}
+    _check_keys(account, {"prop_firm", "initial_balance", "currency"}, "account")
     firm_key = account.get("prop_firm", "none")
     if firm_key not in PROP_FIRMS:
         raise ConfigError(f"account.prop_firm must be one of {sorted(PROP_FIRMS)}")
-    initial_balance = float(account.get("initial_balance", 100_000))
+    if "initial_balance" not in account:
+        raise ConfigError("account.initial_balance is required: the account size the firm's % limits refer to")
+    initial_balance = float(_number(account["initial_balance"], "account.initial_balance", minimum=1))
 
     try:
         limits = _build(RiskLimits, raw.get("risk"), "risk")
@@ -117,18 +163,27 @@ def parse_config(raw: dict) -> BotConfig:
 
     instruments: dict[str, Instrument] = {}
     for name, inst in (raw.get("instruments") or {}).items():
-        inst = dict(inst)
+        inst = dict(inst or {})
         costs = _build(CostModel, inst.pop("costs", None), f"instruments.{name}.costs")
-        broker_symbol = inst.pop("broker_symbol", name)
+        broker_symbol = str(inst.pop("broker_symbol", name))
+        history_csv = inst.pop("history_csv", None)
         spec = _build(InstrumentSpec, {"symbol": broker_symbol, **inst}, f"instruments.{name}")
-        instruments[name] = Instrument(name, broker_symbol, spec, costs)
+        for key in ("value_per_point", "volume_min", "volume_max", "volume_step"):
+            _number(getattr(spec, key), f"instruments.{name}.{key}", minimum=1e-12)
+        _number(spec.digits, f"instruments.{name}.digits", minimum=0, integer=True)
+        if spec.volume_min > spec.volume_max:
+            raise ConfigError(f"instruments.{name}: volume_min is above volume_max")
+        instruments[name] = Instrument(name, broker_symbol, spec, costs, history_csv)
 
     slots: list[Slot] = []
     for i, s in enumerate(raw.get("strategies") or []):
         slot = _build(Slot, s, f"strategies[{i}]")
         if slot.symbol not in instruments:
             raise ConfigError(f"strategies[{i}] ({slot.id}): instrument {slot.symbol!r} is not defined")
-        slot.timeframe = slot.timeframe.upper()
+        _number(slot.magic, f"{slot.id}.magic", minimum=1, integer=True)
+        if not isinstance(slot.enabled, bool):
+            raise ConfigError(f"{slot.id}.enabled must be true or false")
+        slot.timeframe = str(slot.timeframe).upper()
         if slot.timeframe not in TIMEFRAMES:
             raise ConfigError(f"{slot.id}: timeframe must be one of {TIMEFRAMES}")
         try:
@@ -141,22 +196,42 @@ def parse_config(raw: dict) -> BotConfig:
     if len(set(ids)) != len(ids) or len(set(magics)) != len(magics):
         raise ConfigError("strategy ids and magic numbers must be unique")
 
-    broker = {"type": "paper", "deviation_points": 20, "filling": "auto", **(raw.get("broker") or {})}
+    broker = {"type": "paper", "deviation_points": 20, "filling": "auto", "allow_orders": False,
+              **(raw.get("broker") or {})}
+    _check_keys(broker, {"type", "deviation_points", "filling", "allow_orders"}, "broker")
     if broker["type"] not in ("paper", "mt5"):
         raise ConfigError("broker.type must be 'paper' or 'mt5'")
+    if broker["filling"] not in ("auto", "fok", "ioc", "return"):
+        raise ConfigError("broker.filling must be auto, fok, ioc or return (lower case)")
+    _number(broker["deviation_points"], "broker.deviation_points", minimum=0, integer=True)
+    if not isinstance(broker["allow_orders"], bool):
+        raise ConfigError("broker.allow_orders must be true or false")
+
+    mt5 = raw.get("mt5") or {}
+    _check_keys(mt5, {"path"}, "mt5")
+    alerts = raw.get("alerts") or {}
+    _check_keys(alerts, {"telegram", "prefix"}, "alerts")
+    walkforward = {"in_sample_bars": 1000, "out_sample_bars": 250, "objective": "sharpe", "min_trades": 5,
+                   **(raw.get("walkforward") or {})}
+    _check_keys(walkforward, {"in_sample_bars", "out_sample_bars", "objective", "min_trades"}, "walkforward")
+    for key in ("in_sample_bars", "out_sample_bars"):
+        _number(walkforward[key], f"walkforward.{key}", minimum=1, integer=True)
+    runtime = _build(Runtime, raw.get("runtime"), "runtime")
+    _number(runtime.poll_seconds, "runtime.poll_seconds", minimum=5, integer=True)
+    if not 0 <= runtime.heartbeat_hour_utc <= 23:
+        raise ConfigError("runtime.heartbeat_hour_utc must be 0-23")
 
     return BotConfig(
         prop_firm=firm_key,
         initial_balance=initial_balance,
-        currency=account.get("currency", "USD"),
+        currency=str(account.get("currency", "USD")),
         limits=limits,
         firm_notes=notes,
         instruments=instruments,
         slots=slots,
-        walkforward={"in_sample_bars": 1000, "out_sample_bars": 250, "objective": "sharpe", "min_trades": 5,
-                     **(raw.get("walkforward") or {})},
+        walkforward=walkforward,
         broker=broker,
-        mt5=raw.get("mt5") or {},
-        runtime=_build(Runtime, raw.get("runtime"), "runtime"),
-        alerts=raw.get("alerts") or {},
+        mt5=mt5,
+        runtime=runtime,
+        alerts=alerts,
     )

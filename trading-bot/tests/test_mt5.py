@@ -37,10 +37,10 @@ def test_open_sends_market_order_with_stops(broker, fake_mt5):
 
 def test_short_close_buys_at_ask(broker, fake_mt5):
     pos = Position("US500.cash", Side.SHORT, 2.0, 100.0, None, ticket=42, magic=7)
-    price = broker.close(pos, "exit")
+    fill = broker.close(pos, "exit")
     req = fake_mt5.requests[-1]
     assert req["type"] == fake_mt5.ORDER_TYPE_BUY and req["position"] == 42 and req["price"] == 101.0
-    assert price == 101.0
+    assert fill.price == 101.0 and fill.volume == 2.0
 
 
 def test_modify_uses_sltp_action(broker, fake_mt5):
