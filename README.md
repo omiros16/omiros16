@@ -38,3 +38,7 @@
 Το `keystore/timetable.p12` (κωδικός `timetable`) υπογράφει το APK. Κράτα το ίδιο κλειδί ώστε
 οι νέες εκδόσεις να εγκαθίστανται πάνω στην παλιά χωρίς να χαθούν τα δεδομένα. Για νέα έκδοση
 ανέβασε το `VERSION_CODE` στο `build.sh`.
+
+## Άλλα projects στο repo
+
+- [`trading-bot/`](trading-bot/README.md): αυτόματο swing trading bot για US100 / US500 σε MT5 (FTMO / E8), με backtest, walk-forward και όρια ρίσκου.

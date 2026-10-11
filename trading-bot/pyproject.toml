@@ -1,0 +1,8 @@
+[project]
+name = "tradingbot"
+version = "0.1.0"
+description = "US100/US500 swing trading bot for MT5 (FTMO / E8) with backtesting and risk limits"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.env
+/config/config.yaml
+/data/
+/reports/
+/logs/
+/state/
+/dryrun/
+/KILL_SWITCH
