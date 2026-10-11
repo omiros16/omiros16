@@ -10,3 +10,5 @@ __pycache__/
 /state/
 /dryrun/
 /KILL_SWITCH
+/research/data_raw/
+/research/output/
