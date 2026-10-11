@@ -28,6 +28,10 @@ GITHUB_FILES = {
     "us_market_data.csv": ("SteelCerberus/us-market-data", "f018e73", "data/us_market_data.csv"),
     "sp500_signals.json": ("jamesbens/sp500-signals", "fe677a4", "docs/data/sp500_signals.json"),
     "spy_5m.csv": ("vivek-v-rao/Intraday-Vol", "3a1b40f", "SPY.csv"),
+    "nikkei225.csv": ("VatsalSin/Stock-Market-Indices-Dataset", "799aaff", "Nikkei%20225.csv"),
+    "hangseng.csv": ("VatsalSin/Stock-Market-Indices-Dataset", "799aaff", "HSI.csv"),
+    "djia.csv": ("VatsalSin/Stock-Market-Indices-Dataset", "799aaff", "DJIA.csv"),
+    "nifty50.csv": ("VatsalSin/Stock-Market-Indices-Dataset", "799aaff", "NIFTY%2050.csv"),
 }
 
 PACKAGE_FILES = {
@@ -61,7 +65,7 @@ def fetch_github(name: str, repo: str, commit: str, path: str) -> None:
         # Fall back to a shallow git checkout of that file at the default branch.
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{repo}", tmp], check=True)
-            dest.write_bytes((Path(tmp) / path).read_bytes())
+            dest.write_bytes((Path(tmp) / path.replace("%20", " ")).read_bytes())
             print(f"  note: {name} taken from the current default branch, not {commit}")
 
 

@@ -83,6 +83,13 @@ def closes_as_ohlc(close: pd.Series) -> pd.DataFrame:
     return pd.DataFrame({c: close for c in OHLC})
 
 
+@lru_cache
+def vatsal(name: str) -> pd.DataFrame:
+    df = pd.read_csv(RAW / name, parse_dates=["Date"], index_col="Date")
+    df = df.drop(columns=[c for c in df.columns if c.startswith("Unnamed")])
+    return _ohlc(df)
+
+
 # Dataset id -> (loader, start, end, has_real_open, has_range)
 SETS = {
     "SPX-E": (spx_ohlc, "1962-01-02", "1989-12-29", False, True),
@@ -93,6 +100,11 @@ SETS = {
     "NDX-H": (ndx_ohlc, "2019-01-02", "2026-10-09", True, True),
     "NQ-H": (nq_ohlc, "2019-01-02", "2026-10-09", True, True),
     "SPXC-H": (lambda: closes_as_ohlc(spx_closes()), "2020-01-02", "2026-10-09", False, False),
+    # Amendment 4: cross-market out-of-sample (first 400 rows are warm-up).
+    "N225-X": (lambda: vatsal("nikkei225.csv"), "2006-08-01", "2019-12-30", True, True),
+    "HSI-X": (lambda: vatsal("hangseng.csv"), "2006-08-01", "2019-12-27", True, True),
+    "DJIA-X": (lambda: vatsal("djia.csv"), "2001-08-01", "2019-09-30", True, True),
+    "NIFTY-X": (lambda: vatsal("nifty50.csv"), "2001-08-01", "2019-12-02", True, True),
 }
 
 # Warm-up history loaded before each window so 200/252-day indicators are ready.
