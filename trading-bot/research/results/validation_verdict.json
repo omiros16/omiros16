@@ -1,0 +1,9 @@
+{
+  "rule3_passed": true,
+  "spx_v_sharpe": 0.543,
+  "comp_v_sharpe": 0.626,
+  "stressed_cagr": {
+    "SPX-V": 0.0277,
+    "COMP-V": 0.0384
+  }
+}
