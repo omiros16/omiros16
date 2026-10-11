@@ -160,13 +160,20 @@ class PaperBroker(Broker):
         log.info("PAPER open %s %s %.2f @ %.2f sl=%s tp=%s", symbol, side.label, volume, price, sl, tp)
         return replace(pos)
 
-    def close(self, position: Position, comment: str = "") -> float:
+    def close(self, position: Position, comment: str = "", volume: float | None = None) -> float:
         pos = self._positions.get(position.ticket)
         if pos is None:
             raise BrokerError(f"paper position {position.ticket} not found")
         q = self.quote(pos.symbol)
         slip = self.costs[pos.symbol].slippage
         price = q.bid - slip if pos.side is Side.LONG else q.ask + slip
+        if volume is not None and volume < pos.volume - 1e-9:
+            vpp = self.spec(pos.symbol).value_per_point
+            part = replace(pos, volume=volume)
+            self.balance += part.unrealized(price, vpp) - self.costs[pos.symbol].commission_per_lot * volume
+            pos.volume = round(pos.volume - volume, 8)
+            self._save()
+            return price
         self._settle(pos, price)
         return price
 

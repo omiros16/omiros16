@@ -11,13 +11,14 @@ account:
 risk:
   risk_per_trade_pct: 0.5          # % του equity που χάνεις αν χτυπήσει το SL
   daily_loss_limit_pct: 3.0        # δικό σου όριο, ΚΑΤΩ από το 5% της FTMO
-  max_drawdown_pct: 8.0            # δικό σου όριο, ΚΑΤΩ από το 10% της FTMO
+  max_drawdown_pct: 9.0            # οριστική διακοπή στο -9%: 1% περιθώριο ως το 10% της FTMO (δες RESEARCH.md)
   drawdown_mode: static            # static (FTMO) | trailing
   max_trade_risk_share_of_daily: 0.5   # ένα trade δεν ρισκάρει πάνω από το 50% του ημερήσιου ορίου (κανόνας E8)
-  max_open_positions: 2
+  max_open_positions: 10            # το mr_ensemble μπορεί να χρησιμοποιεί πολλά tickets
   max_trades_per_day: 4
   max_requests_per_day: 200        # E8: 2.000/ημέρα, μετράνε και οι αλλαγές SL/TP
   max_lots_per_ticket: null        # E8: 50
+  max_exposure: 3.0                # ανώτατη θέση = 3x equity (notional) για στρατηγικές έκθεσης
   close_before_weekend: false      # true για FTMO Standard funded / E8 Signature (το preset το ενεργοποιεί μόνο του)
   weekend_close_utc: "FRI 20:00"
   no_new_trades_after_utc: "FRI 18:00"
@@ -27,20 +28,20 @@ risk:
 # (python -m tradingbot check), αυτά εδώ χρησιμοποιούνται στο backtest και στο paper.
 instruments:
   US100:
-    broker_symbol: US100.cash      # όπως εμφανίζεται στο Market Watch του MT5
+    broker_symbol: US100.cash      # όπως στο Market Watch του MT5 (FTMO από 2/2026: μπορεί να είναι US100.sim)
     value_per_point: 1.0           # USD ανά 1 μονάδα τιμής ανά 1 lot: ΕΛΕΓΞΕ το με `check`
     volume_min: 0.01
     volume_max: 100
     volume_step: 0.01
     digits: 2
     costs:
-      spread: 1.5                  # σε μονάδες τιμής (points του δείκτη)
+      spread: 1.7                  # σε μονάδες τιμής (points του δείκτη)
       slippage: 1.0
-      commission_per_lot: 0.0      # ανά πλευρά
-      swap_long_per_lot: -4.0      # ανά νύχτα, δες Specification στο MT5
+      commission_per_lot: 0.0      # FTMO: μηδενικό commission στα indices
+      swap_long_per_lot: -4.0      # ανά νύχτα, δες Specification στο MT5 (FTMO: περιλαμβάνει dividends)
       swap_short_per_lot: -1.0
   US500:
-    broker_symbol: US500.cash
+    broker_symbol: US500.cash      # ή US500.sim
     value_per_point: 1.0
     volume_min: 0.01
     volume_max: 100
@@ -54,28 +55,37 @@ instruments:
       swap_short_per_lot: -0.3
 
 # Κάθε "slot" = μία στρατηγική σε ένα σύμβολο και timeframe, με δικό της magic number.
+# Η έρευνα (research/RESEARCH.md) βρήκε edge ΜΟΝΟ στο mr_ensemble. Οι άλλες δύο
+# στρατηγικές μένουν για σύγκριση, απενεργοποιημένες.
 strategies:
+  - id: us100_mr
+    symbol: US100
+    timeframe: D1                  # αποφασίζει στο κλείσιμο του ημερήσιου bar, εκτελεί στο επόμενο άνοιγμα
+    strategy: mr_ensemble
+    magic: 26101104
+    enabled: true
+    params:
+      leverage: 1.5                # challenge: 1.5 (δες RESEARCH.md). Funded: 1.0
+      vol_target: 0.15
+      vol_cap: 2.0
+      regime_max_autocorr: 0.10    # φρένο ασφαλείας: σταματάει αν η αγορά πάψει να κάνει mean reversion
+      min_change: 0.02             # αλλάζει μέγεθος μόνο αν η διαφορά είναι >= 2% του equity
+
+  - id: us500_mr
+    symbol: US500
+    timeframe: D1
+    strategy: mr_ensemble
+    magic: 26101105
+    enabled: false                 # 0.90 συσχέτιση με το US100: ή το ένα ή το άλλο (ή και τα δύο με leverage μισό)
+    params:
+      leverage: 1.5
+
   - id: us100_trend
     symbol: US100
     timeframe: D1
     strategy: trend_following
     magic: 26101101
-    enabled: true
-    params:
-      lookbacks: [21, 63, 252]     # 1, 3, 12 μήνες
-      stop_atr: 3.0
-      trail_atr: 4.0
-      allow_short: false
-    grid:                          # τι δοκιμάζει το walk-forward (κράτα το μικρό)
-      stop_atr: [2.0, 3.0, 4.0]
-      trail_atr: [0, 3.0, 5.0]
-
-  - id: us500_trend
-    symbol: US500
-    timeframe: D1
-    strategy: trend_following
-    magic: 26101102
-    enabled: true
+    enabled: false                 # έρευνα: ~0 μετά από swaps (H1/H2)
     params:
       lookbacks: [21, 63, 252]
       stop_atr: 3.0
@@ -90,17 +100,14 @@ strategies:
     timeframe: H4
     strategy: quarters_sweep
     magic: 26101103
-    enabled: false                 # υπόθεση προς έλεγχο, όχι για live πριν περάσει walk-forward
+    enabled: false                 # έρευνα: χωρίς edge σε ημερήσια (H13)
     params:
-      quarter_size: 250            # 1000-point εύρος / 4
+      quarter_size: 250
       level_source: both
       swing_strength: 3
       trend_ma: 200
       rr: 2.0
       max_bars: 20
-    grid:
-      rr: [1.5, 2.0, 3.0]
-      level_source: [quarters, swings, both]
 
 walkforward:
   in_sample_bars: 1000

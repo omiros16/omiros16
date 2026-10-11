@@ -46,8 +46,8 @@ class Broker(ABC):
     ) -> Position: ...
 
     @abstractmethod
-    def close(self, position: Position, comment: str = "") -> float:
-        """Close the whole position at market. Returns the fill price."""
+    def close(self, position: Position, comment: str = "", volume: float | None = None) -> float:
+        """Close the position (or `volume` lots of it) at market. Returns the fill price."""
 
     @abstractmethod
     def modify(self, position: Position, sl: float | None, tp: float | None) -> None: ...

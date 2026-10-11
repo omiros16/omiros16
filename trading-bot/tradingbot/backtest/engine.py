@@ -143,31 +143,71 @@ class _Sim:
         self.risk.register_trade()
         self.risk.register_request()
 
-    def close(self, t: pd.Timestamp, price: float, reason: str) -> None:
+    def close(self, t: pd.Timestamp, price: float, reason: str, volume: float | None = None) -> None:
+        """Close the position, or `volume` lots of it, at `price`."""
         pos = self.pos
         assert pos is not None
-        commission = self.cfg.costs.commission_per_lot * pos.volume
-        gross = (price - pos.entry_price) * int(pos.side) * pos.volume * self.vpp
+        vol = pos.volume if volume is None else min(volume, pos.volume)
+        share = vol / pos.volume
+        commission = self.cfg.costs.commission_per_lot * vol
+        gross = (price - pos.entry_price) * int(pos.side) * vol * self.vpp
         self.balance += gross - commission
         self.trades.append(
             Trade(
                 symbol=pos.symbol,
                 side=pos.side,
-                volume=pos.volume,
+                volume=vol,
                 entry_time=pos.entry_time,
                 entry_price=pos.entry_price,
                 exit_time=t,
                 exit_price=price,
                 gross_pnl=gross,
-                commission=pos.commission + commission,
-                swap=pos.swap,
+                commission=pos.commission * share + commission,
+                swap=pos.swap * share,
                 reason=reason,
-                initial_risk=pos.initial_risk,
+                initial_risk=pos.initial_risk * share,
                 balance_after=self.balance,
                 extra={"entry_reason": pos.comment},
             )
         )
-        self.pos = None
+        if vol >= pos.volume - 1e-9:
+            self.pos = None
+        else:
+            pos.volume = round(pos.volume - vol, 8)
+            pos.commission *= 1 - share
+            pos.swap *= 1 - share
+            pos.initial_risk *= 1 - share
+
+    def rebalance(self, sig: Signal, t: pd.Timestamp, bid_open: float, equity_now: float) -> None:
+        """Resize the long position to sig.exposure x equity at this open."""
+        spec, costs = self.cfg.spec, self.cfg.costs
+        ask = self.buy_price(bid_open, slip=False)
+        target = self.risk.target_volume(sig.exposure or 0.0, equity_now, ask, spec)
+        current = self.pos.volume if self.pos is not None else 0.0
+        diff = target - current
+        min_vol = max(spec.volume_step, sig.min_change * equity_now / (ask * self.vpp))
+        if abs(diff) < min_vol - 1e-9 and not (target == 0 and current > 0):
+            return
+        if diff > 0:
+            ok, why = self.risk.can_increase()
+            if not ok:
+                self.skipped.append(f"{t}: increase skipped: {why}")
+                return
+            fill = self.buy_price(bid_open)
+            commission = costs.commission_per_lot * diff
+            self.balance -= commission
+            if self.pos is None:
+                self.pos = Position(self.symbol, Side.LONG, round(diff, 8), fill, t, commission=commission,
+                                    comment=sig.reason)
+                self.risk.register_trade()
+            else:
+                pos = self.pos
+                pos.entry_price = (pos.entry_price * pos.volume + fill * diff) / (pos.volume + diff)
+                pos.volume = round(pos.volume + diff, 8)
+                pos.commission += commission
+        else:
+            self.close(t, self.sell_price(bid_open), "rebalance" if target > 0 else "target 0", volume=-diff)
+        self.risk.register_request()
 
     def close_market(self, t: pd.Timestamp, bid: float, reason: str) -> None:
         assert self.pos is not None
@@ -258,6 +298,8 @@ def run_backtest(bars: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig, sy
                 sim.close_market(t, o[i], pending.reason or "strategy exit")
             elif pending.kind is SignalKind.MODIFY and sim.pos is not None:
                 _apply_modify(sim, pending, o[i])
+            elif pending.kind is SignalKind.TARGET:
+                sim.rebalance(pending, t, o[i], last_equity)
             pending = None
 
         # 3) Stops / targets / equity floor inside the bar.
@@ -289,6 +331,9 @@ def run_backtest(bars: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig, sy
                     if sig.stop_loss is None or sig.side is None:
                         raise ValueError(f"{strategy.name}: OPEN signal without side/stop at {t}")
                     if sim.pos is None and (cfg.trade_from is None or t >= cfg.trade_from):
+                        pending = sig
+                elif sig.kind is SignalKind.TARGET:
+                    if cfg.trade_from is None or t >= cfg.trade_from or sim.pos is not None:
                         pending = sig
                 elif sim.pos is not None:
                     pending = sig

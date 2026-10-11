@@ -144,15 +144,16 @@ class MT5Broker(Broker):
             comment=comment,
         )
 
-    def close(self, position: Position, comment: str = "") -> float:
+    def close(self, position: Position, comment: str = "", volume: float | None = None) -> float:
         order_type = self.mt5.ORDER_TYPE_SELL if position.side is Side.LONG else self.mt5.ORDER_TYPE_BUY
+        lots = float(position.volume if volume is None else min(volume, position.volume))
 
         def build() -> dict:
             q = self.quote(position.symbol)
             return {
                 "action": self.mt5.TRADE_ACTION_DEAL,
                 "symbol": position.symbol,
-                "volume": float(position.volume),
+                "volume": lots,
                 "type": order_type,
                 "position": position.ticket,
                 "price": q.bid if position.side is Side.LONG else q.ask,

@@ -6,6 +6,7 @@ from tradingbot.models import Position, Side, SignalKind
 from tradingbot.strategies import STRATEGIES, create_strategy
 
 CONFIGS = {
+    "mr_ensemble": [{}, {"leverage": 2.0, "regime_max_autocorr": None}],
     "trend_following": [{}, {"allow_short": True, "trend_ma": 100, "lookbacks": [20, 60]}],
     "quarters_sweep": [{"quarter_size": 50}, {"quarter_size": 100, "level_source": "swings", "trend_ma": 0}],
 }

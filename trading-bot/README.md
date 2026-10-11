@@ -3,9 +3,11 @@
 Αυτόματο bot που ανοίγει και κλείνει θέσεις μόνο του, 24 ώρες το 24ωρο, σε MetaTrader 5 μέσω Python.
 Είναι χτισμένο πάνω στη συζήτηση στο [`docs/conversation.md`](docs/conversation.md) (9–11/10/2026).
 
-> **Σημαντικό:** το bot ως κώδικας δουλεύει. Το αν βγάζει λεφτά **δεν** το λύνει ο κώδικας: το λύνει
-> μόνο το testing σε δεδομένα. Οι δύο στρατηγικές που περιλαμβάνονται είναι **υποθέσεις προς έλεγχο**,
-> όχι αποδεδειγμένο edge. Μην το βάλεις live πριν περάσει walk-forward και 2–4 εβδομάδες paper trading.
+> **Η στρατηγική που τρέχει (`mr_ensemble`) βγήκε από έρευνα 89 δοκιμών σε 36 χρόνια
+> δεδομένων: δες το [RESEARCH.md](RESEARCH.md).** Είναι ημερήσιο mean reversion σε US100/US500
+> με volatility targeting. Out-of-sample (2019–2026, NASDAQ-100): Sharpe περίπου 1.0, +5.5–6.6%
+> τον χρόνο χωρίς μόχλευση, max drawdown −6%. Είναι μικρό, σταθερό edge, όχι εγγύηση: δούλεψε
+> μόνο σε αμερικανικούς δείκτες και δεν δούλευε πριν το 1990. Πριν το live: 2–4 εβδομάδες paper.
 
 ## Τι κάνει
 
@@ -19,7 +21,8 @@
 | Κομμάτι | Αρχείο | Τι κάνει |
 |---|---|---|
 | Data feed | `tradingbot/data/` | Κλεισμένα bars από MT5 (live), CSV (backtest), Yahoo (ημερήσια, για έρευνα) |
-| Στρατηγικές | `tradingbot/strategies/` | `trend_following` (ομάδα 1 της λίστας μελετών), `quarters_sweep` (SMC + Quarters, ομάδες 4–5) |
+| Στρατηγικές | `tradingbot/strategies/` | **`mr_ensemble`** (η στρατηγική της έρευνας, ενεργή). Για σύγκριση, απενεργοποιημένες: `trend_following` και `quarters_sweep` (SMC + Quarters), που δεν έδειξαν edge |
+| Έρευνα | `research/` | Δεδομένα, pre-registration, 85 δοκιμές, επικύρωση, holdout, προσομοίωση FTMO |
 | Ορισμοί SMC/ICT | `tradingbot/smc.py` | Αυστηροί, ελέγξιμοι ορισμοί: swing points, BOS/CHoCH, FVG, liquidity sweep, quarter levels |
 | Risk | `tradingbot/risk.py` | Sizing ανά % ρίσκου, ημερήσιο όριο ζημιάς, max drawdown, kill switch, όρια prop firm, Σαββατοκύριακο |
 | Execution | `tradingbot/brokers/` | MT5 (`order_send`, magic number, retries σε requote) και paper broker |
@@ -74,8 +77,11 @@ python -m tradingbot download --source mt5 --symbol US100.cash --timeframe D1 --
 # ή ημερήσια από Yahoo (^NDX / ^GSPC), για γρήγορη έρευνα σε οποιονδήποτε υπολογιστή
 python -m tradingbot download --source yahoo --symbol US100 --start 2000-01-01 --out data/US100_D1.csv
 
-python -m tradingbot backtest --slot us100_trend --data data/US100_D1.csv
+python -m tradingbot backtest --slot us100_mr --data data/US100_D1.csv
 ```
+
+Τα δεδομένα της έρευνας (NQ futures 2019–2026 κ.λπ.) τα φτιάχνουν τα
+`python research/fetch_data.py` και `python research/export_csv.py`, μέσα στο `data/`.
 
 Βγάζει metrics, Monte Carlo και φάκελο `reports/...` με `trades.csv`, `equity.csv` και `equity.png`.
 Κοίτα ιδιαίτερα το **Worst day %** (σε σχέση με το 5% της FTMO) και το **Max drawdown %**.
@@ -85,8 +91,11 @@ python -m tradingbot backtest --slot us100_trend --data data/US100_D1.csv
 
 ### 3. Out-of-sample και walk-forward
 
+Για το `mr_ensemble` αυτό έχει γίνει ήδη στην έρευνα ([RESEARCH.md](RESEARCH.md)), και η στρατηγική
+δεν έχει παραμέτρους προς βελτιστοποίηση. Για δική σου στρατηγική:
+
 ```bash
-python -m tradingbot walkforward --slot us100_trend --data data/US100_D1.csv
+python -m tradingbot walkforward --slot <slot> --data data/US100_D1.csv
 ```
 
 Βελτιστοποιεί στο grid του config σε 1.000 bars, το δοκιμάζει στα επόμενα 250 που δεν έχει δει,
@@ -102,8 +111,22 @@ python -m tradingbot walkforward --slot us100_trend --data data/US100_D1.csv
 
 Για να δοκιμάσεις όλο το live loop χωρίς MT5 και χωρίς να περιμένεις: `python -m tradingbot dryrun`.
 
-### 5. Live με ελάχιστο size
-Βάλε `risk_per_trade_pct: 0.25` (ή λιγότερο) για τις πρώτες εβδομάδες, και `broker.type: mt5`.
+### 5. Live
+`broker.type: mt5`. Για το challenge το default config (μόχλευση 1.5×, ημερήσιο stop 3%,
+οριστική διακοπή στο −9%) έχει, κατά την προσομοίωση, περίπου 75% πιθανότητα να περάσει και τις
+δύο φάσεις σε περίπου 10 + 5 μήνες. Στο funded λογαριασμό βάλε `leverage: 1.0`.
+
+### Πώς δουλεύει το `mr_ensemble` στο live
+- Μία απόφαση την ημέρα, όταν κλείνει το D1 bar του MT5 (17:00 New York). Η εκτέλεση γίνεται στο
+  άνοιγμα του επόμενου bar.
+- Υπολογίζει 52 κανόνες mean reversion και το μέγεθος θέσης που θέλει
+  (`μόχλευση × ποσοστό κανόνων long × volatility scaling`). Μετά **προσαρμόζει** τη θέση:
+  ανοίγει, προσθέτει ή κλείνει μέρος της.
+- Κάθε ticket έχει backup SL από την πλευρά του broker, για την περίπτωση που το bot είναι
+  offline. Η κύρια προστασία είναι το ημερήσιο όριο στο equity, που ελέγχεται κάθε 30".
+- Φρένο ασφαλείας: αν η αγορά πάψει να κάνει mean reversion (αυτοσυσχέτιση 2 ετών > +0.10),
+  μηδενίζει τη θέση.
+- **Έλεγξε** ότι τα D1 bars του MT5 κλείνουν στις 17:00 New York (server GMT+2/+3, όπως στη FTMO).
 
 ## 24/7 στο VPS
 
@@ -153,13 +176,14 @@ python -m tradingbot walkforward --slot us100_trend --data data/US100_D1.csv
 
 ## Checklist πριν το live
 
-- [ ] Walk-forward με Deflated Sharpe > 0.95 σε δεδομένα του broker σου (MT5), με σωστά κόστη.
+- [ ] Backtest του `mr_ensemble` σε D1 δεδομένα του δικού σου MT5 (`download --source mt5`), με το πραγματικό swap.
 - [ ] 2–4 εβδομάδες paper χωρίς σφάλματα στο `logs/bot.log`, και αποτελέσματα κοντά στο backtest.
+- [ ] Τα D1 bars κλείνουν στις 17:00 New York.
 - [ ] Το `check` δείχνει σωστό σύμβολο και value/point, και Algo Trading ON.
 - [ ] Επιβεβαιωμένοι οι τρέχοντες κανόνες της firm και ο τύπος λογαριασμού (FTMO Swing / E8 One για swing).
 - [ ] Το Telegram δουλεύει (στάλθηκε το «Bot ξεκίνησε»).
 - [ ] Δοκίμασες ότι το `KILL_SWITCH` κλείνει τις θέσεις σε demo.
-- [ ] `risk_per_trade_pct` ≤ 0.25 για τις πρώτες εβδομάδες.
+- [ ] `leverage` 1.5 για το challenge και 1.0 για funded.
 
 ## Σημειώσεις
 

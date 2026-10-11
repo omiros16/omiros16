@@ -21,6 +21,7 @@ class SignalKind(str, Enum):
     OPEN = "open"
     CLOSE = "close"
     MODIFY = "modify"
+    TARGET = "target"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,11 @@ class Signal:
 
     Prices are absolute. Every OPEN must carry a stop loss: the risk manager
     sizes the trade from the distance to it and rejects trades without one.
+
+    TARGET signals come from exposure-based strategies: `exposure` is the
+    wanted long position as a multiple of equity (0.5 = notional worth half
+    the account). The executor resizes the position when the difference is
+    at least `min_change` (also in multiples of equity).
     """
 
     kind: SignalKind
@@ -36,6 +42,8 @@ class Signal:
     stop_loss: float | None = None
     take_profit: float | None = None
     reason: str = ""
+    exposure: float | None = None
+    min_change: float = 0.0
 
     @staticmethod
     def open(side: Side, stop_loss: float, take_profit: float | None = None, reason: str = "") -> "Signal":
@@ -48,6 +56,11 @@ class Signal:
     @staticmethod
     def modify(stop_loss: float | None, take_profit: float | None = None, reason: str = "") -> "Signal":
         return Signal(SignalKind.MODIFY, stop_loss=stop_loss, take_profit=take_profit, reason=reason)
+
+    @staticmethod
+    def target(exposure: float, min_change: float = 0.0, reason: str = "") -> "Signal":
+        return Signal(SignalKind.TARGET, side=Side.LONG, exposure=max(0.0, exposure), min_change=min_change,
+                      reason=reason)
 
 
 @dataclass

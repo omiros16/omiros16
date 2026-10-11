@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from .base import Strategy
+from .mr_ensemble import MREnsemble
 from .quarters_sweep import QuartersSweep
 from .trend_following import TrendFollowing
 
-STRATEGIES: dict[str, type[Strategy]] = {cls.name: cls for cls in (TrendFollowing, QuartersSweep)}
+STRATEGIES: dict[str, type[Strategy]] = {cls.name: cls for cls in (MREnsemble, TrendFollowing, QuartersSweep)}
 
 
 def create_strategy(name: str, params: dict[str, Any] | None = None) -> Strategy:

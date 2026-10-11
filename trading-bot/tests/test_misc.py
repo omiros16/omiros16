@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_example_config_loads():
     cfg = load_config(ROOT / "config" / "config.example.yaml")
     assert cfg.prop_firm == "ftmo_swing"
-    assert {s.id for s in cfg.slots} == {"us100_trend", "us500_trend", "us100_sweep"}
+    assert {s.id for s in cfg.slots} == {"us100_mr", "us500_mr", "us100_trend", "us100_sweep"}
+    assert [s.id for s in cfg.slots if s.enabled] == ["us100_mr"]
+    assert cfg.limits.max_drawdown_pct == 9.0 and cfg.limits.daily_loss_limit_pct == 3.0
     assert cfg.instruments["US100"].broker_symbol == "US100.cash"
 
 

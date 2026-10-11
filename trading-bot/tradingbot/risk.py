@@ -91,6 +91,7 @@ class RiskLimits:
     max_trades_per_day: int = 4
     max_requests_per_day: int = 200
     max_lots_per_ticket: float | None = None
+    max_exposure: float = 3.0  # notional / equity cap for exposure-based strategies
     close_before_weekend: bool = False
     weekend_close_utc: str = "FRI 20:00"
     no_new_trades_after_utc: str = "FRI 18:00"
@@ -105,6 +106,8 @@ class RiskLimits:
             raise ValueError("drawdown_mode must be 'static' or 'trailing'")
         if not 0 < self.max_trade_risk_share_of_daily <= 1:
             raise ValueError("max_trade_risk_share_of_daily must be in (0, 1]")
+        if not 0 < self.max_exposure <= 20:
+            raise ValueError("max_exposure must be in (0, 20]")
         parse_weekly_time(self.weekend_close_utc)
         parse_weekly_time(self.no_new_trades_after_utc)
         ZoneInfo(self.day_reset_timezone)
@@ -286,6 +289,32 @@ class RiskManager:
             if _at_or_after(now_utc, lim.no_new_trades_after_utc) or now_utc.weekday() > weekday:
                 return False, "too close to the weekend close"
         return True, ""
+
+    def can_increase(self, now_utc: datetime | None = None) -> tuple[bool, str]:
+        """Checks for adding exposure (exposure-based strategies). Reducing is always allowed."""
+        s, lim = self.state, self.limits
+        if s.killed:
+            return False, f"killed: {s.kill_reason}"
+        if s.halted_today:
+            return False, "daily loss limit hit, trading paused until tomorrow"
+        if self.requests_left() < 3:
+            return False, "daily server request budget used up"
+        if now_utc is not None and lim.close_before_weekend:
+            weekday, _ = parse_weekly_time(lim.no_new_trades_after_utc)
+            if _at_or_after(now_utc, lim.no_new_trades_after_utc) or now_utc.weekday() > weekday:
+                return False, "too close to the weekend close"
+        return True, ""
+
+    def target_volume(self, exposure: float, equity: float, price: float, spec: InstrumentSpec) -> float:
+        """Total lots for a long position worth `exposure` x equity, capped by max_exposure.
+
+        volume_max / max_lots_per_ticket limit single orders, not the position:
+        the executor splits larger positions into several tickets.
+        """
+        if exposure <= 0 or equity <= 0 or price <= 0:
+            return 0.0
+        exposure = min(exposure, self.limits.max_exposure)
+        return _floor_to_step(exposure * equity / (price * spec.value_per_point), spec.volume_step)
 
     def size(
         self,

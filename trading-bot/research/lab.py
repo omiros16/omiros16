@@ -65,7 +65,6 @@ def simulate(
     """Net daily returns of holding `night`/`day` positions on `df` bars."""
     o = df["open"].to_numpy(float)
     c = df["close"].to_numpy(float)
-    n = len(df)
     prev_c = np.concatenate([[np.nan], c[:-1]])
     r_cc = c / prev_c - 1
     r_night = o / prev_c - 1
