@@ -141,3 +141,28 @@ def test_causality_check_catches_one_bar_look_ahead():
         return _mode_a(future_up.astype(float))
 
     assert not is_causal(Trial("PEEK", {"L": 1}, peek))
+
+
+def test_ticket_ledger_matches_an_independent_implementation():
+    """prop_ledger.run_ledger (fast, used for RESEARCH.md §5) against a plain re-implementation."""
+    import prop_ledger as pl
+    from prop_ledger_check import ref_run
+
+    rng = np.random.default_rng(3)
+    n = 900
+    c = 1000 * np.exp(np.cumsum(rng.normal(0.0002, 0.013, n)))
+    o = np.r_[c[0], c[:-1]] * np.exp(rng.normal(0, 0.004, n))
+    h = np.maximum(o, c) * (1 + rng.uniform(0, 0.008, n))
+    low = np.minimum(o, c) * (1 - rng.uniform(0, 0.008, n))
+    idx = pd.bdate_range("2015-01-05", periods=n)
+    nights = np.r_[(idx[1:] - idx[:-1]).days, 1].astype(float)
+    a = {"O": o, "H": h, "L": low, "C": c, "nights": nights, "rate": np.full(n, 0.05 / 360)}
+    x = np.clip(rng.normal(0.4, 0.5, n), 0, 2)  # any exposure path exercises the bookkeeping
+    for name in ("D1 bot: max(B,E)-3%, LIFO", "D3 guard B-4.5% only", "D5 FIFO + D1 stop"):
+        d = pl.DESIGNS[name]
+        for lev in (0.75, 2.5):
+            eq, cnt, *_ = pl.run(a, x, 10, n, lev, d)
+            ref, stops, guards, kills, ftmo = ref_run(a, x, 10, n, lev, d["ref_kind"], d["guard_pct"],
+                                                       d["close_order"], d["realize"], d["guard_now"])
+            np.testing.assert_allclose(eq, ref, atol=1e-9, err_msg=f"{name} {lev}")
+            assert (cnt[0], cnt[1], cnt[2], cnt[3]) == (stops, guards, kills, ftmo), (name, lev)
