@@ -32,6 +32,8 @@ class Strategy(ABC):
         unknown = set(params) - set(self.defaults)
         if unknown:
             raise ValueError(f"{self.name}: unknown parameter(s) {sorted(unknown)}; allowed: {sorted(self.defaults)}")
+        for key, value in params.items():
+            params[key] = _typed(self.name, key, value, self.defaults[key])
         self.params: dict[str, Any] = {**self.defaults, **params}
         self.validate()
 
@@ -53,6 +55,26 @@ class Strategy(ABC):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.params})"
+
+
+def _typed(strategy: str, key: str, value: Any, default: Any) -> Any:
+    """A parameter value of the same kind as its default (a quoted "1.5" in YAML is a typo, not a number).
+
+    None passes through: some parameters use it to switch a feature off (validate() decides).
+    """
+    if value is None:
+        return value
+    if isinstance(default, bool):
+        if not isinstance(value, bool):
+            raise ValueError(f"{strategy}: {key} must be true or false, got {value!r}")
+    elif isinstance(default, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{strategy}: {key} must be a number, got {value!r}")
+        if isinstance(default, int):
+            if int(value) != value:
+                raise ValueError(f"{strategy}: {key} must be a whole number, got {value!r}")
+            value = int(value)
+    return value
 
 
 def entry_index(data: pd.DataFrame, entry_time: pd.Timestamp) -> int:

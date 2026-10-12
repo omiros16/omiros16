@@ -223,7 +223,8 @@ def summarize(rows) -> pd.DataFrame:
             "2y both pass %": 100 * p1c * p2c, "2y challenge fail %": 100 * (f1c + p1c * f2c),
             "expected attempts": 1 / p_both if p_both else np.inf,
             "expected months to funded": t.mean() / p_both / 21 if p_both else np.inf,
-            "P1 bot stops / yr": float((g["stops1"] / g["days1"] * 252).mean()),
+            # pooled over all phase-1 days (a mean of per-path rates over-weights paths that end early)
+            "P1 bot stops / yr": float(g["stops1"].sum() / g["days1"].sum() * 252),
             "funded FTMO breach %": 100 * (g["of"] == -1).mean(), "funded bot kill %": 100 * (g["of"] == -2).mean(),
             "funded median %": 100 * np.median(fe), "funded p10 %": 100 * np.percentile(fe, 10),
         })

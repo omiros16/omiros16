@@ -216,7 +216,7 @@ python -m tradingbot walkforward --slot <slot> --data data/US100_D1.csv
 |---|---|---|
 | `ftmo_swing` | 5% / 10% | Επιτρέπει weekend. Μέχρι 200 ανοιχτές εντολές, 2.000 positions/ημέρα. Μόνο δικό σου bot. |
 | `ftmo_standard` | 5% / 10% | Όπως πάνω, αλλά κλείνει πριν το Σαββατοκύριακο (funded). |
-| `e8_one` | από το dashboard | 2.000 requests/ημέρα (μετράνε και οι αλλαγές SL/TP), 100 ανοιχτά, 50 lots/ticket. Επιτρέπει weekend. Βάλε `risk.firm_daily_loss_pct` και `day_reset_timezone` από το dashboard. |
+| `e8_one` | από το dashboard | 2.000 requests/ημέρα (μετράνε και οι αλλαγές SL/TP), 100 ανοιχτά, 50 lots/ticket. Επιτρέπει weekend. Βάλε `risk.firm_daily_loss_pct` από το dashboard και `day_reset_timezone` στη ζώνη ώρας του server ως όνομα IANA (π.χ. `Europe/Athens`, `Europe/Prague`· για σταθερό UTC+2 γράψε `Etc/GMT-2`, με ανάποδο πρόσημο, όχι `GMT+2`). |
 | `e8_signature` | από το dashboard | Όπως το E8 One, αλλά κλείνει πριν το Σαββατοκύριακο. |
 
 Οι κανόνες είναι όπως ίσχυαν στις **11/10/2026**. **Επιβεβαίωσέ τους** στο site της firm πριν το live.

@@ -20,8 +20,12 @@ What it reproduces (tradingbot/runner.py + tradingbot/risk.py), per bar t:
        FTMO daily loss          B - 0.05*base   (floating P/L included)
        FTMO max loss            base*(1 - 0.10)
   3. Open O[t]: if min(E, equity at bid(O)) is already through the bot's floor (the bot checks at its
-     first poll after midnight while the market is still closed, and again at the open), flatten at
-     the open and pause for the day (kill if through the kill floor).
+     first poll after midnight while the market is still closed, and again at the open), flatten and
+     pause for the day. After a weekend or holiday the exit fills at the open (a kill if that is
+     through the kill floor). After a weekday night with cont[t] (run(..., over_cont=True): the CFD
+     trades through the cash index's overnight gap) the stop fills at the higher of the two floors,
+     or at the last close if that was already through it, and it is a kill only if that floor is
+     the kill floor.
   4. Rebalance at O[t] to target x[t-1]*equity (decided at close t-1), runner._rebalance rules:
      keep if |diff| < min_change*equity/ask (unless target 0), add one ticket at ask, or close
      partially at bid in `close_order` (0 LIFO = runner today, 1 FIFO, 2 highest entry price first).
@@ -163,11 +167,17 @@ def run_ledger(O, H, L, C, x, nights, rate, cont, start, end, lev,
             Etr = min(E0, Eo)
             if (not killed) and (Etr <= f_kill or Etr <= f_day):
                 fill = obid * (1 - slip)
+                hit_kill = Etr <= f_kill
                 if cont[t]:
+                    # The CFD traded through the night: the stop filled at the higher floor
+                    # (or at the last close if that was already through it), so the kill
+                    # applies only if that floor was the kill floor.
                     fl0 = max(f_day, f_kill)
                     if E0 <= fl0:
                         fill = C[t - 1] * (1 - h) * (1 - slip)
+                        hit_kill = E0 <= f_kill
                     else:
+                        hit_kill = f_kill >= f_day
                         tot = _units(u, k)
                         ue = 0.0
                         ss = 0.0
@@ -179,7 +189,7 @@ def run_ledger(O, H, L, C, x, nights, rate, cont, start, end, lev,
                 k = 0
                 traded = True
                 counts[9] += 1
-                if Etr <= f_kill:
+                if hit_kill:
                     killed = True
                     counts[2] += 1
                 elif f_guard >= f_int:

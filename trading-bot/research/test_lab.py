@@ -162,7 +162,40 @@ def test_ticket_ledger_matches_an_independent_implementation():
         d = pl.DESIGNS[name]
         for lev in (0.75, 2.5):
             eq, cnt, *_ = pl.run(a, x, 10, n, lev, d)
-            ref, stops, guards, kills, ftmo = ref_run(a, x, 10, n, lev, d["ref_kind"], d["guard_pct"],
-                                                       d["close_order"], d["realize"], d["guard_now"])
+            ref, stops, guards, kills, ftmo, *_ = ref_run(a, x, 10, n, lev, d["ref_kind"], d["guard_pct"],
+                                                           d["close_order"], d["realize"], d["guard_now"])
             np.testing.assert_allclose(eq, ref, atol=1e-9, err_msg=f"{name} {lev}")
             assert (cnt[0], cnt[1], cnt[2], cnt[3]) == (stops, guards, kills, ftmo), (name, lev)
+
+    # The options behind the RESEARCH.md §5 numbers: stops that fill overnight at their level
+    # (cont), account restarts (rebase) and stopping at the first pass / breach / kill.
+    a["cont"] = np.r_[False, nights[:-1] == 1]
+    rebase = np.zeros(n, dtype=bool)
+    rebase[[300, 600]] = True
+    d = pl.DESIGNS["D1 bot: max(B,E)-3%, LIFO"]
+    for lev in (1.0, 2.5, 4.0):
+        eq, cnt, *_ = pl.run(a, x, 10, n, lev, d, rebase=rebase, over_cont=True)
+        ref, stops, guards, kills, ftmo, *_ = ref_run(a, x, 10, n, lev, 1, 0.0, 0, 0, cont=a["cont"], rebase=rebase)
+        np.testing.assert_allclose(eq, ref, atol=1e-9, err_msg=f"cont/rebase {lev}")
+        assert (cnt[0], cnt[2], cnt[3]) == (stops, kills, ftmo), lev
+        for target, kill in ((0.05, 0.09), (0.10, 0.09), (0.5, 0.045), (0.5, 0.03)):  # passes and kills
+            eq, cnt, outcome, day, _ = pl.run(a, x, 10, n, lev, d, target=target, stop_on_outcome=True,
+                                              over_cont=True, kill_pct=kill)
+            ref, *_, ref_outcome, ref_day = ref_run(a, x, 10, n, lev, 1, 0.0, 0, 0, cont=a["cont"], kill_pct=kill,
+                                                    stop_on_outcome=True, target=target)
+            assert (outcome, day) == (ref_outcome, ref_day), (lev, target, kill)
+            np.testing.assert_allclose(eq[: len(ref)], ref, atol=1e-9)
+
+
+def test_ledger_overnight_stop_at_the_daily_floor_is_not_a_kill():
+    """A weekday gap through the daily floor fills the stop at that floor (far above the kill floor)."""
+    import prop_ledger as pl
+
+    bars = {"O": np.array([100.0, 100.0, 96.5, 96.6]), "H": np.array([100.0, 100.5, 97.0, 97.0]),
+            "L": np.array([100.0, 99.1, 96.0, 96.0]), "C": np.array([100.0, 99.2, 96.8, 96.9]),
+            "nights": np.ones(4), "rate": np.zeros(4), "cont": np.array([False, False, True, True])}
+    d = pl.DESIGNS["D1 bot: max(B,E)-3%, LIFO"]
+    eq, cnt, outcome, *_ = pl.run(bars, np.full(4, 2.0), 1, 4, 1.5, d, target=0.10, stop_on_outcome=True,
+                                  over_cont=True)
+    assert (cnt[0], cnt[2], cnt[9]) == (1, 0, 1)  # one daily stop at the gap, no kill
+    assert outcome == 0 and eq[1] > 0.96

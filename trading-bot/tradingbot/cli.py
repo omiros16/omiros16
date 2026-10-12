@@ -85,6 +85,9 @@ def _load_with_warmup(path: str, start: str | None, end: str | None, warmup: int
         bars = load_bars_csv(path, None, end)
     except (OSError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
+    if len(bars) <= warmup:
+        raise ConfigError(f"{path} has {len(bars)} bars; the strategy needs {warmup} to warm up its indicators "
+                          "before it can trade: use a longer history")
     if not start:
         return bars, None
     trade_from = pd.Timestamp(start)
@@ -493,6 +496,8 @@ def cmd_dryrun(args) -> int:
 
     files = _resolve_data_args(cfg, args.data)
     enabled = [s for s in cfg.slots if s.enabled]
+    if not enabled:
+        raise ConfigError("no enabled strategy slot: set enabled: true on the one to replay")
     data: dict[str, pd.DataFrame] = {}
     timeframes: dict[str, str] = {}
     for slot in enabled:

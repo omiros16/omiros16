@@ -29,7 +29,8 @@ risk:
   weekend_close_utc: "FRI 16:30"
   no_new_trades_after_utc: "FRI 16:00"
   weekend_reopen_utc: "SUN 21:00"  # από εδώ και πέρα επιτρέπονται ξανά νέες θέσεις
-  day_reset_timezone: Europe/Prague   # η FTMO μηδενίζει την ημέρα στα μεσάνυχτα CE(S)T
+  day_reset_timezone: Europe/Prague   # η FTMO μηδενίζει την ημέρα στα μεσάνυχτα CE(S)T (όνομα IANA:
+                                      # σταθερό UTC+2 = Etc/GMT-2, όχι GMT+2)
 
 # Στοιχεία συμβολαίου και κόστη. Στο live το bot διαβάζει τα specs από το MT5
 # (python -m tradingbot check), αυτά εδώ χρησιμοποιούνται στο backtest και στο paper.

@@ -115,6 +115,26 @@ class RiskLimits:
     firm_margin_pct: float = 0.5  # stop this much before the firm's daily limit
 
     def validate(self) -> None:
+        def number(name: str, optional: bool = False) -> None:
+            v = getattr(self, name)
+            if optional and v is None:
+                return
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(f"{name} must be a number, got {v!r}")
+
+        for name in ("risk_per_trade_pct", "daily_loss_limit_pct", "max_drawdown_pct",
+                     "max_trade_risk_share_of_daily", "max_exposure", "firm_margin_pct"):
+            number(name)
+        number("firm_daily_loss_pct", optional=True)
+        number("max_lots_per_ticket", optional=True)
+        for name in ("max_open_positions", "max_trades_per_day", "max_requests_per_day"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+                raise ValueError(f"{name} must be a whole number >= 1, got {v!r}")
+        if not isinstance(self.close_before_weekend, bool):
+            raise ValueError("close_before_weekend must be true or false")
+        if self.max_lots_per_ticket is not None and self.max_lots_per_ticket <= 0:
+            raise ValueError("max_lots_per_ticket must be > 0 (or left out)")
         if not 0 < self.risk_per_trade_pct <= 5:
             raise ValueError("risk_per_trade_pct must be in (0, 5]")
         if self.daily_loss_limit_pct <= 0 or self.max_drawdown_pct <= 0:
@@ -130,7 +150,11 @@ class RiskLimits:
         parse_weekly_time(self.weekend_close_utc)
         parse_weekly_time(self.no_new_trades_after_utc)
         parse_weekly_time(self.weekend_reopen_utc)
-        ZoneInfo(self.day_reset_timezone)
+        try:
+            ZoneInfo(self.day_reset_timezone)
+        except (LookupError, ValueError, TypeError):  # ZoneInfoNotFoundError is a KeyError
+            raise ValueError(f"day_reset_timezone must be an IANA time zone name such as Europe/Prague, got "
+                             f"{self.day_reset_timezone!r} (a fixed UTC+2 is Etc/GMT-2: the sign is inverted)") from None
 
 
 def apply_firm_rules(limits: RiskLimits, firm: FirmRules) -> tuple[RiskLimits, list[str]]:
@@ -169,6 +193,7 @@ def apply_firm_rules(limits: RiskLimits, firm: FirmRules) -> tuple[RiskLimits, l
         notes.append(f"{firm.name} does not allow weekend holding: close_before_weekend forced on")
     if firm.notes:
         notes.append(firm.notes)
+    out.validate()  # again: the preset may have set firm_daily_loss_pct (firm_margin_pct must be below it)
     return out, notes
 
 
@@ -178,7 +203,7 @@ def parse_weekly_time(text: str) -> tuple[int, time]:
         day, hhmm = text.strip().upper().split()
         hour, minute = (int(x) for x in hhmm.split(":"))
         return WEEKDAYS[day], time(hour, minute)
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, AttributeError):
         raise ValueError(f"expected e.g. 'FRI 20:00', got {text!r}") from None
 
 

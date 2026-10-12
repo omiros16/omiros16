@@ -643,3 +643,66 @@ def test_csv_dates_with_dashes(tmp_path):
     assert list(load_bars_csv(tmp_path / "mdy.csv").index.year) == [2024, 2024]
     (tmp_path / "dmy.csv").write_text("Date,Open,High,Low,Close\n15-01-2024,1,2,0.5,1.5\n16-01-2024,1,2,0.5,1.5\n")
     assert list(load_bars_csv(tmp_path / "dmy.csv").index.day) == [15, 16]
+
+
+# Third review round -----------------------------------------------------------------------
+def _example_raw():
+    import yaml
+    return yaml.safe_load(Path(EXAMPLE).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (lambda r: r["risk"].update(day_reset_timezone="GMT+2"), "IANA"),
+    (lambda r: r["risk"].update(firm_margin_pct=6), "firm_margin_pct"),  # checked after the preset sets 5%
+    (lambda r: r["risk"].update(firm_margin_pct=-0.5), "firm_margin_pct"),
+    (lambda r: r["risk"].update(max_open_positions="10"), "whole number"),
+    (lambda r: r["risk"].update(weekend_close_utc=1630), "FRI 20:00"),
+    (lambda r: r["runtime"].update(heartbeat_hour_utc="21"), "number"),
+    (lambda r: r["runtime"].update(kill_switch_file=None), "kill_switch_file"),
+    (lambda r: r["strategies"][0]["params"].update(leverage="1.5"), "leverage must be a number"),
+    (lambda r: r["strategies"][0].update(params=[1.5]), "mapping"),
+    (lambda r: r["strategies"][0].update(grid={"leverage": 1.5}), "list"),
+])
+def test_config_mistakes_are_config_errors(mutate, message):
+    """run_bot.bat stops only on exit code 2 (ConfigError); anything else restarts the bot forever."""
+    raw = _example_raw()
+    mutate(raw)
+    with pytest.raises(ConfigError, match=message):
+        parse_config(raw)
+
+
+def test_commented_out_params_mean_defaults(tmp_path, capsys):
+    raw = _example_raw()
+    us500 = next(s for s in raw["strategies"] if s["id"] == "us500_mr")
+    us500["params"] = None  # 'params:' with its only line commented out
+    cfg = parse_config(raw)
+    assert cfg.slot("us500_mr").params == {} and cfg.slot("us500_mr").grid == {}
+
+
+def test_config_file_in_a_windows_code_page_is_a_config_error(tmp_path, capsys):
+    path = tmp_path / "config.yaml"
+    path.write_bytes(Path(EXAMPLE).read_text(encoding="utf-8").encode("cp1253"))
+    assert main(["check", "-c", str(path)]) == 2
+    assert "UTF-8" in capsys.readouterr().err
+    path.write_text("account: [unclosed", encoding="utf-8")
+    assert main(["check", "-c", str(path)]) == 2
+    assert "not valid YAML" in capsys.readouterr().err
+
+
+def test_backtest_refuses_data_shorter_than_the_warmup(tmp_path, capsys):
+    short = tmp_path / "short.csv"
+    lines = (ROOT / "data" / "US100_D1_NQ_2019_2026.csv").read_text().splitlines()[:301]
+    short.write_text("\n".join(lines) + "\n")
+    assert main(["backtest", "-c", EXAMPLE, "--slot", "us100_mr", "--data", str(short), "--out", str(tmp_path)]) == 2
+    assert "warm up" in capsys.readouterr().err
+
+
+def test_dryrun_without_an_enabled_slot_is_a_config_error(tmp_path, capsys):
+    raw = _example_raw()
+    for s in raw["strategies"]:
+        s["enabled"] = False
+    import yaml
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    assert main(["dryrun", "-c", str(path), "--workdir", str(tmp_path / "w")]) == 2
+    assert "no enabled strategy slot" in capsys.readouterr().err

@@ -140,7 +140,12 @@ def load_config(path: str | Path) -> BotConfig:
     path = Path(path)
     if not path.exists():
         raise ConfigError(f"{path} not found (copy config/config.example.yaml to start)")
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{path} is not UTF-8 text ({exc.reason} at byte {exc.start}): save it as UTF-8") from exc
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
     return parse_config(raw)
 
 
@@ -178,6 +183,14 @@ def parse_config(raw: dict) -> BotConfig:
     slots: list[Slot] = []
     for i, s in enumerate(raw.get("strategies") or []):
         slot = _build(Slot, s, f"strategies[{i}]")
+        slot.id = str(slot.id)  # state files key slots by id as text
+        # 'params:' with every line commented out is null in YAML: same as no parameters.
+        slot.params = {} if slot.params is None else slot.params
+        slot.grid = {} if slot.grid is None else slot.grid
+        if not isinstance(slot.params, dict):
+            raise ConfigError(f"{slot.id}.params must be a mapping (name: value), got {slot.params!r}")
+        if not isinstance(slot.grid, dict) or not all(isinstance(v, list) and v for v in slot.grid.values()):
+            raise ConfigError(f"{slot.id}.grid must map each parameter to a non-empty list of values")
         if slot.symbol not in instruments:
             raise ConfigError(f"strategies[{i}] ({slot.id}): instrument {slot.symbol!r} is not defined")
         _number(slot.magic, f"{slot.id}.magic", minimum=1, integer=True)
@@ -188,7 +201,7 @@ def parse_config(raw: dict) -> BotConfig:
             raise ConfigError(f"{slot.id}: timeframe must be one of {TIMEFRAMES}")
         try:
             create_strategy(slot.strategy, slot.params)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise ConfigError(f"{slot.id}: {exc}") from exc
         slots.append(slot)
     ids = [s.id for s in slots]
@@ -218,8 +231,12 @@ def parse_config(raw: dict) -> BotConfig:
         _number(walkforward[key], f"walkforward.{key}", minimum=1, integer=True)
     runtime = _build(Runtime, raw.get("runtime"), "runtime")
     _number(runtime.poll_seconds, "runtime.poll_seconds", minimum=5, integer=True)
-    if not 0 <= runtime.heartbeat_hour_utc <= 23:
+    if _number(runtime.heartbeat_hour_utc, "runtime.heartbeat_hour_utc", minimum=0, integer=True) > 23:
         raise ConfigError("runtime.heartbeat_hour_utc must be 0-23")
+    for key in ("state_dir", "log_dir", "kill_switch_file"):
+        value = getattr(runtime, key)
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"runtime.{key} must be a file or folder name, got {value!r}")
 
     return BotConfig(
         prop_firm=firm_key,
