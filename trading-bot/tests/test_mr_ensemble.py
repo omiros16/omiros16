@@ -122,8 +122,11 @@ def test_engine_close_matches_research_on_random_data():
     # The strategy warms up for 260 bars; compare from the research start on.
     res = run_backtest(df, strat, cfg)
     eng_ret = res.equity.pct_change().loc[lab_ret.index[1:]]
-    corr = np.corrcoef(eng_ret.fillna(0), lab_ret.iloc[1:])[0, 1]
-    assert corr > 0.97
+    a, b = eng_ret.fillna(0).to_numpy(), lab_ret.iloc[1:].to_numpy()
+    assert np.corrcoef(a, b)[0, 1] > 0.97
+    # Same size too, not only the same timing: a 2x or 0.5x sizing error must fail.
+    slope = float(np.dot(a, b) / np.dot(b, b))
+    assert 0.95 < slope < 1.05
 
 
 def test_risk_target_volume_caps():
@@ -198,15 +201,20 @@ def test_runner_rebalances_to_zero_without_false_alerts(tmp_path):
         runner.step()
         assert sum(p.volume for p in broker.positions()) == pytest.approx(1000.0)
         assert len(broker.positions()) == 3  # split at 400 lots per ticket
+        # Every ticket carries the broker-side backup stop, below the price, at the bot's loss floor:
+        # 1000 lots x (100 - SL) = equity - floor (3% daily limit of 100k).
+        stops = {p.stop_loss for p in broker.positions()}
+        assert len(stops) == 1 and 0 < stops.pop() == pytest.approx(100 - 3000 / 1000, abs=0.01)
         feed.advance()
         runner.step()
         assert sum(p.volume for p in broker.positions()) == pytest.approx(400.0)
+        # Smaller position, same room to the floor: the stop moves further away.
+        assert all(p.stop_loss == pytest.approx(100 - 3000 / 400, abs=0.01) for p in broker.positions())
         feed.advance()
         runner.step()
         assert broker.positions() == []
         feed.advance()
         runner.step()
         assert not any("SL/TP" in m for m in sent)
-        assert all(p.stop_loss for p in broker.positions())
     finally:
         STRATEGIES.pop("target_plan", None)

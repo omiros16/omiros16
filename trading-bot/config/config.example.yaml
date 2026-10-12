@@ -67,7 +67,7 @@ instruments:
       swap_short_pct: -1.0
 
 # Κάθε "slot" = μία στρατηγική σε ένα σύμβολο και timeframe, με δικό της magic number.
-# Η έρευνα (research/RESEARCH.md) βρήκε edge ΜΟΝΟ στο mr_ensemble. Οι άλλες δύο
+# Η έρευνα (RESEARCH.md) βρήκε edge ΜΟΝΟ στο mr_ensemble. Οι άλλες δύο
 # στρατηγικές μένουν για σύγκριση, απενεργοποιημένες.
 strategies:
   - id: us100_mr

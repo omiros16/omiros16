@@ -67,14 +67,21 @@ def test_trend_trailing_stop_only_moves_up():
     bars = make_bars(600, start_price=4000, seed=2)
     strat = create_strategy("trend_following", {"trail_atr": 2.0, "trail_min_step_atr": 0.0})
     data = strat.prepare(bars)
-    i = 400
-    pos = Position("X", Side.LONG, 1.0, data["close"].iat[i - 50], data.index[i - 50], stop_loss=0.0)
-    sig = strat.on_bar(data, i, pos)
-    if sig is not None and sig.kind is SignalKind.MODIFY:
-        assert sig.stop_loss > 0
+    moved = 0
+    for i in range(300, 590):
+        pos = Position("X", Side.LONG, 1.0, data["close"].iat[i - 50], data.index[i - 50], stop_loss=0.0)
+        sig = strat.on_bar(data, i, pos)
+        if sig is None or sig.kind is not SignalKind.MODIFY:
+            continue
+        moved += 1
+        assert 0 < sig.stop_loss < data["close"].iat[i]
         pos.stop_loss = sig.stop_loss
+        # With the stop already there, the same bar must not move it again (and never down).
         again = strat.on_bar(data, i, pos)
         assert again is None or again.kind is not SignalKind.MODIFY or again.stop_loss > pos.stop_loss
+        lower = Position("X", Side.LONG, 1.0, pos.entry_price, pos.entry_time, stop_loss=sig.stop_loss + 1e6)
+        assert strat.on_bar(data, i, lower) is None or strat.on_bar(data, i, lower).kind is not SignalKind.MODIFY
+    assert moved > 10
 
 
 def test_sweep_time_stop():

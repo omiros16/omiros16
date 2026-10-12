@@ -93,10 +93,14 @@ class TrendFollowing(Strategy):
             step = p["trail_min_step_atr"] * a
             if position.side is Side.LONG:
                 new_sl = closes.max() - p["trail_atr"] * a
+                if new_sl >= close:  # already through the trailing level: a stop there would be invalid
+                    return Signal.close("trailing stop level crossed")
                 if position.stop_loss is None or new_sl > position.stop_loss + step:
                     return Signal.modify(new_sl, position.take_profit, "trailing stop")
             else:
                 new_sl = closes.min() + p["trail_atr"] * a
+                if new_sl <= close:
+                    return Signal.close("trailing stop level crossed")
                 if position.stop_loss is None or new_sl < position.stop_loss - step:
                     return Signal.modify(new_sl, position.take_profit, "trailing stop")
         return None
