@@ -76,14 +76,17 @@ def play(pool: np.ndarray, idx: np.ndarray, target: float, sizing: dict, stop: f
             gap = lev * o <= -stop
             day_ret = np.where(hit, np.where(gap, lev * o, -stop - STOP_SLIP), day_ret)
         new_eq = eq * (1 + day_ret)
-        loss_vs_start = eq - new_eq  # in units of the initial balance
-        failed = alive & ((loss_vs_start >= daily_limit) | (new_eq <= 1 - max_loss))
+        # The firm checks equity at every moment: the day's worst point is the low
+        # (or the stop exit when the stop fired).
+        worst_eq = np.where(hit, new_eq, np.minimum(new_eq, eq * (1 + lev * w)))
+        loss_vs_start = eq - worst_eq  # in units of the initial balance
+        failed = alive & ((loss_vs_start >= daily_limit) | (worst_eq <= 1 - max_loss))
         passed = alive & ~failed & (new_eq >= 1 + target) & (d + 1 >= min_days)
         outcome[failed], when[failed] = -1, d + 1
         outcome[passed], when[passed] = 1, d + 1
         stops += hit & alive
+        eq = np.where(alive, new_eq, eq)  # failed paths keep their failure-day equity
         alive &= ~(failed | passed)
-        eq = np.where(alive, new_eq, eq)
         skip = hit
         if not alive.any():
             break

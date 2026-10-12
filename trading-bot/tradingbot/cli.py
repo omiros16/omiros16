@@ -337,7 +337,9 @@ def cmd_check(args) -> int:
         client.connect()
     except MT5Error as exc:
         print(f"MT5 connection test FAILED: {exc}")
-        return 1
+        if not live:
+            print("(backtests and dry runs work without MT5; `run` needs it, also in paper mode, for the prices)")
+        return 1 if live else 0
     try:
         from .brokers.mt5_broker import MT5Broker
 

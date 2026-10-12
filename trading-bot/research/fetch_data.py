@@ -2,12 +2,15 @@
 
 Sources are public GitHub repositories (pinned to the commits used in the
 study) and data files bundled in the `arch` and `skfolio` Python packages.
+Every file is checked against the SHA-256 digests in data_manifest.json, so a
+changed or truncated download is refused instead of silently used.
 Run:  python research/fetch_data.py
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -42,57 +45,67 @@ PACKAGE_FILES = {
 }
 
 
-def _resolve_commit(repo: str, short: str) -> str:
-    out = subprocess.run(
-        ["git", "ls-remote", f"https://github.com/{repo}"], capture_output=True, text=True, check=True
-    ).stdout
-    # The pinned short hash may no longer be a branch head; raw URLs accept short hashes too.
-    for line in out.splitlines():
-        sha = line.split()[0]
-        if sha.startswith(short):
-            return sha
-    return short
+MANIFEST = Path(__file__).resolve().parent / "data_manifest.json"
 
 
-def fetch_github(name: str, repo: str, commit: str, path: str) -> None:
-    dest = RAW / name
-    if dest.exists():
-        return
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _install(name: str, data: bytes, expected: str | None) -> None:
+    """Write via a temporary file and keep it only if it matches the digest used in the study."""
+    digest = hashlib.sha256(data).hexdigest()
+    if expected is not None and digest != expected:
+        raise SystemExit(f"{name}: sha256 {digest[:16]}... does not match the study's {expected[:16]}... "
+                         "(the source changed); not installed")
+    tmp = RAW / (name + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(RAW / name)
+
+
+def fetch_github(name: str, repo: str, commit: str, path: str, expected: str | None) -> None:
     url = f"https://raw.githubusercontent.com/{repo}/{commit}/{path}"
-    try:
-        urllib.request.urlretrieve(url, dest)
-    except Exception:
-        # Fall back to a shallow git checkout of that file at the default branch.
-        with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(["git", "clone", "-q", "--depth", "1", f"https://github.com/{repo}", tmp], check=True)
-            dest.write_bytes((Path(tmp) / path.replace("%20", " ")).read_bytes())
-            print(f"  note: {name} taken from the current default branch, not {commit}")
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        data = resp.read()
+    _install(name, data, expected)
 
 
-def fetch_package(name: str, requirement: str, inner: str) -> None:
-    dest = RAW / name
-    if dest.exists():
-        return
+def fetch_package(name: str, requirement: str, inner: str, expected: str | None) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(
             [sys.executable, "-m", "pip", "download", "--no-deps", "-q", "-d", tmp, requirement], check=True
         )
         wheel = next(Path(tmp).glob("*.whl"))
         with zipfile.ZipFile(wheel) as z:
-            dest.write_bytes(z.read(inner))
+            _install(name, z.read(inner), expected)
 
 
 def main() -> None:
+    """Fetch missing files and verify every file against data_manifest.json (the study's data).
+
+    `--update-manifest` records the digests of the files present (only for a deliberate data update).
+    """
     RAW.mkdir(parents=True, exist_ok=True)
-    for name, (repo, commit, path) in GITHUB_FILES.items():
-        print(f"{name:32s} <- github.com/{repo}@{commit}/{path}")
-        fetch_github(name, repo, commit, path)
-    for name, (req, inner) in PACKAGE_FILES.items():
-        print(f"{name:32s} <- pip {req}:{inner}")
-        fetch_package(name, req, inner)
+    manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    jobs = [(name, fetch_github, (repo, commit, path), f"github.com/{repo}@{commit}/{path}")
+            for name, (repo, commit, path) in GITHUB_FILES.items()]
+    jobs += [(name, fetch_package, (req, inner), f"pip {req}:{inner}") for name, (req, inner) in PACKAGE_FILES.items()]
+    bad = []
+    for name, fetch, fetch_args, source in jobs:
+        dest = RAW / name
+        if not dest.exists():
+            print(f"{name:32s} <- {source}")
+            fetch(name, *fetch_args, manifest.get(name))
+        if name in manifest and _sha256(dest) != manifest[name]:
+            bad.append(name)
+    if "--update-manifest" in sys.argv:
+        MANIFEST.write_text(json.dumps({f.name: _sha256(f) for f in sorted(RAW.iterdir())}, indent=2) + "\n")
+        print(f"manifest updated: {MANIFEST}")
+    elif bad:
+        raise SystemExit(f"these files differ from the data used in the study: {bad}. Delete them and run again.")
     for f in sorted(RAW.iterdir()):
-        digest = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
-        print(f"  {f.name:32s} {f.stat().st_size:>10,d} bytes  sha256 {digest}")
+        print(f"  {f.name:32s} {f.stat().st_size:>10,d} bytes  sha256 {_sha256(f)[:16]}  "
+              + ("ok" if manifest.get(f.name) == _sha256(f) else "NOT IN MANIFEST"))
 
 
 if __name__ == "__main__":

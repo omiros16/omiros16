@@ -10,8 +10,12 @@ account:
 
 risk:
   risk_per_trade_pct: 0.5          # % του equity που χάνεις αν χτυπήσει το SL
-  daily_loss_limit_pct: 3.0        # δικό σου όριο, ΚΑΤΩ από το 5% της FTMO
-  max_drawdown_pct: 9.0            # οριστική διακοπή στο -9%: 1% περιθώριο ως το 10% της FTMO (δες RESEARCH.md)
+  # Το δικό σου ημερήσιο όριο, ΚΑΤΩ από το 5% της FTMO. Μετριέται από το max(balance, equity) στην
+  # αρχή της ημέρας, άρα κόβει και τη ζημιά που κουβαλάει η θέση από χθες (δες RESEARCH.md §5).
+  daily_loss_limit_pct: 3.0
+  # Οριστική διακοπή. Challenge: 9.5 (στο -9.5% το challenge έχει ούτως ή άλλως χαθεί).
+  # Funded: 9.0, για περιθώριο από το 10% της FTMO.
+  max_drawdown_pct: 9.5
   drawdown_mode: static            # static (FTMO) | trailing
   max_trade_risk_share_of_daily: 0.5   # ένα trade δεν ρισκάρει πάνω από το 50% του ημερήσιου ορίου (κανόνας E8)
   max_open_positions: 10            # το mr_ensemble μπορεί να χρησιμοποιεί πολλά tickets
@@ -20,8 +24,11 @@ risk:
   max_lots_per_ticket: null        # E8: 50
   max_exposure: 3.0                # ανώτατη θέση = 3x equity (notional) για στρατηγικές έκθεσης
   close_before_weekend: false      # true για FTMO Standard funded / E8 Signature (το preset το ενεργοποιεί μόνο του)
-  weekend_close_utc: "FRI 20:00"
-  no_new_trades_after_utc: "FRI 18:00"
+  # Ώρες UTC. Αν η Παρασκευή είναι αργία στις ΗΠΑ (π.χ. Μεγάλη Παρασκευή), ισχύουν την Πέμπτη.
+  # 16:30 UTC: πριν από τα πρόωρα κλεισίματα (μετά την Ημέρα των Ευχαριστιών, παραμονή Χριστουγέννων).
+  weekend_close_utc: "FRI 16:30"
+  no_new_trades_after_utc: "FRI 16:00"
+  weekend_reopen_utc: "SUN 21:00"  # από εδώ και πέρα επιτρέπονται ξανά νέες θέσεις
   day_reset_timezone: Europe/Prague   # η FTMO μηδενίζει την ημέρα στα μεσάνυχτα CE(S)T
 
 # Στοιχεία συμβολαίου και κόστη. Στο live το bot διαβάζει τα specs από το MT5
@@ -34,12 +41,17 @@ instruments:
     volume_max: 100
     volume_step: 0.01
     digits: 2
+    # Ιστορικό για το warm-up όταν ο broker δίνει λιγότερα D1 bars απ' όσα χρειάζεται η
+    # στρατηγική (το mr_ensemble θέλει 514). Δες README, "Ιστορικό". Π.χ.:
+    # history_csv: data/US100_D1_NQ_2019_2026.csv
     costs:
-      spread: 1.7                  # σε μονάδες τιμής (points του δείκτη)
-      slippage: 1.0
+      # Κόστη ως ποσοστό της τιμής, ώστε το backtest να είναι σωστό και σε παλιά
+      # δεδομένα (1.7 points είναι 0.7 bp στις 24.000 αλλά 17 bp στις 1.000).
+      spread_bp: 1.0               # 1 bp = 0,01% της τιμής (~2,4 points στις 24.000)
+      slippage_bp: 0.5             # ανά εκτέλεση: round trip = spread + 2 x slippage = 2 bp (όπως στην έρευνα)
       commission_per_lot: 0.0      # FTMO: μηδενικό commission στα indices
-      swap_long_per_lot: -4.0      # ανά νύχτα, δες Specification στο MT5 (FTMO: περιλαμβάνει dividends)
-      swap_short_per_lot: -1.0
+      swap_long_pct: -6.0          # ετήσιο % της αξίας της θέσης (/360 ανά νύχτα): επιτόκιο + markup. Δες Specification στο MT5
+      swap_short_pct: -1.0
   US500:
     broker_symbol: US500.cash      # ή US500.sim
     value_per_point: 1.0
@@ -48,11 +60,11 @@ instruments:
     volume_step: 0.01
     digits: 2
     costs:
-      spread: 0.5
-      slippage: 0.3
+      spread_bp: 1.0
+      slippage_bp: 0.5
       commission_per_lot: 0.0
-      swap_long_per_lot: -1.0
-      swap_short_per_lot: -0.3
+      swap_long_pct: -6.0
+      swap_short_pct: -1.0
 
 # Κάθε "slot" = μία στρατηγική σε ένα σύμβολο και timeframe, με δικό της magic number.
 # Η έρευνα (research/RESEARCH.md) βρήκε edge ΜΟΝΟ στο mr_ensemble. Οι άλλες δύο
@@ -65,7 +77,7 @@ strategies:
     magic: 26101104
     enabled: true
     params:
-      leverage: 1.5                # challenge: 1.5 (δες RESEARCH.md). Funded: 1.0
+      leverage: 1.5                # challenge: 1.5 (ή 1.25 για λιγότερες αποτυχίες). Funded: 1.0. Δες RESEARCH.md §5
       vol_target: 0.15
       vol_cap: 2.0
       regime_max_autocorr: 0.10    # φρένο ασφαλείας: σταματάει αν η αγορά πάψει να κάνει mean reversion
@@ -119,6 +131,9 @@ broker:
   type: paper                      # paper (προσομοίωση) | mt5 (πραγματικές εντολές στο συνδεδεμένο account)
   deviation_points: 20
   filling: auto                    # auto | fok | ioc | return
+  # Με type: mt5 το bot στέλνει εντολές μόνο αν το επιβεβαιώσεις: εδώ (true) ή με --allow-orders.
+  # Βάλε true όταν το τρέχεις χωρίς επίβλεψη (Task Scheduler), αλλιώς μετά από restart δεν ξεκινάει.
+  allow_orders: false
 
 mt5:
   path: null                       # π.χ. "C:/Program Files/FTMO MetaTrader 5/terminal64.exe"

@@ -320,7 +320,9 @@ def sweep_sim(x: Ctx, level_source: str, rr: float, max_bars: int = 10, swing_st
 
 
 def h13(level, rr):
-    return Trial("H13", {"level": level, "rr": rr}, build=None, needs_range=True,
+    # needs_open: without real opens, stop and target exits could never gap (they would always
+    # fill exactly at the level), which flatters the rule.
+    return Trial("H13", {"level": level, "rr": rr}, build=None, needs_range=True, needs_open=True,
                  custom=lambda x: sweep_sim(x, level, rr))
 
 

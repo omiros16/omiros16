@@ -39,7 +39,8 @@ def main() -> None:
     corr = allr.corr().round(2)
     corr.to_csv(RESULTS / "crossmarket_corr.csv")
     yearly = pd.concat(series, axis=1, sort=True)
-    yearly = ((1 + yearly.fillna(0)).groupby(yearly.index.year).prod() - 1) * 100
+    # Years without data stay empty (not 0%).
+    yearly = yearly.groupby(yearly.index.year).apply(lambda g: (1 + g).prod(min_count=1) - 1) * 100
 
     pd.set_option("display.width", 220)
     cols = ["market", "costs", "sharpe", "cagr", "vol", "maxdd", "tstat", "worst_day", "trades_per_year"]

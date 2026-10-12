@@ -1,9 +1,12 @@
 """Phase 1: run all 85 pre-registered trials on the discovery sets and apply rules 1-2.
 
-Interpretation fixed before running (also stated in RESEARCH.md):
+Interpretation fixed before running:
   * "best trial" of a hypothesis = highest Sharpe averaged over the discovery
-    sets it can run on; its DSR is computed per set (N = 85, Sharpe variance
-    across all trials on that set) and averaged.
+    sets it can run on; its DSR is computed per set (N = N_TRIALS: 33 after
+    Amendment 1, 85 as pre-registered; Sharpe variance across all trials on
+    that set) and averaged.
+  * the "median Sharpe of the grid" (rule 1) is the median over the trials of
+    their set-averaged Sharpe.
   * "neighbourhood" of a trial = the trials of the same hypothesis that
     differ from it in exactly one numeric parameter by one grid step.
 """
@@ -75,7 +78,7 @@ def main() -> None:
     trials = all_trials()
     res, _ = evaluate(DISCOVERY, trials)
 
-    # Deflated Sharpe per set, N = 85, variance of per-period Sharpe across all trials on that set.
+    # Deflated Sharpe per set, N = N_TRIALS, variance of per-period Sharpe across all trials on that set.
     res["dsr"] = np.nan
     for set_id, g in res.groupby("set"):
         var = float(np.nanvar(g["sr_daily"], ddof=1))

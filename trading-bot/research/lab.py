@@ -9,8 +9,8 @@ position between consecutive segments; swap is charged for every calendar
 night a position is held, using the risk-free rate of that time.
 
 When night[t] == day[t] the day's return is computed close to close, so data
-with unreliable opens (S&P 500 before 2010) is only used through the open
-when a rule actually trades at the open.
+with unreliable opens (S&P 500 before 2010, and on many days of 2011-2013) is
+only used through the open when a rule actually trades at the open.
 """
 
 from __future__ import annotations
@@ -138,8 +138,10 @@ def state_machine(entry: np.ndarray, exit_: np.ndarray, max_hold: int | None = N
 
 # ---------------------------------------------------------------------- stats
 def max_drawdown(returns: pd.Series) -> float:
-    eq = (1 + returns).cumprod()
-    return float((eq / eq.cummax() - 1).min()) if len(eq) else 0.0
+    if not len(returns):
+        return 0.0
+    eq = np.r_[1.0, (1 + returns.to_numpy()).cumprod()]  # the starting capital counts as a peak
+    return float((eq / np.maximum.accumulate(eq) - 1).min())
 
 
 def stats(r: pd.Series, trades: int = 0, exposure: float = float("nan")) -> dict:

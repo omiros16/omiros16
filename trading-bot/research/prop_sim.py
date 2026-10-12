@@ -47,8 +47,9 @@ def play_phase(paths: np.ndarray, target: float, daily_limit=0.05, max_loss=0.10
     day_loss = prev - eq  # in units of the initial balance (initial = 1)
     fail = (day_loss >= daily_limit) | (eq <= 1 - max_loss)
     hit = (eq >= 1 + target) & (np.arange(1, n_days + 1) >= min_days)
-    first_fail = np.where(fail.any(axis=1), fail.argmax(axis=1), n_days + 1)
-    first_hit = np.where(hit.any(axis=1), hit.argmax(axis=1), n_days + 1)
+    # 1-based trading-day numbers; n_days + 1 marks "never".
+    first_fail = np.where(fail.any(axis=1), fail.argmax(axis=1) + 1, n_days + 1)
+    first_hit = np.where(hit.any(axis=1), hit.argmax(axis=1) + 1, n_days + 1)
     outcome = np.where(first_hit < first_fail, 1, np.where(first_fail < first_hit, -1, 0))
     when = np.minimum(first_hit, first_fail)
     return outcome, when
@@ -77,8 +78,11 @@ def main() -> None:
         p1, p2 = (o1 == 1).mean(), (o2 == 1).mean()
         # One funded year at the same leverage: probability of hitting the 10% max loss / 5% daily.
         paths_f = block_bootstrap(pool * lev, 252, 10_000, 20, rng)
-        of, _ = play_phase(paths_f, target=10.0)  # target unreachable: only failures count
-        yearly = np.prod(1 + paths_f, axis=1) - 1
+        of, wf = play_phase(paths_f, target=10.0)  # target unreachable: only failures count
+        # A failed account is closed: its equity stays at the failure day's value.
+        eq_f = np.cumprod(1 + paths_f, axis=1)
+        last = np.where(of == -1, wf - 1, eq_f.shape[1] - 1)
+        yearly = eq_f[np.arange(len(eq_f)), last] - 1
         lr = pool * lev
         rows.append({
             "leverage": lev,

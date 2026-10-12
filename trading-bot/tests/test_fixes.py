@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -30,6 +31,8 @@ from tradingbot.strategies.base import Strategy, bars_held
 
 SYMBOL = "US100.cash"
 UTC = timezone.utc
+ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE = str(ROOT / "config" / "config.example.yaml")
 
 
 class TargetPlan(Strategy):
@@ -141,6 +144,26 @@ def test_weekend_window_allows_sunday_reopen_and_blocks_friday_evening():
     friday = datetime(2024, 1, 5, 17, 0, tzinfo=UTC)
     assert not rm.can_increase(friday)[0] and rm.must_close_for_weekend(friday)
     assert rm.can_increase(datetime(2024, 1, 5, 15, 0, tzinfo=UTC))[0]
+
+
+def test_firm_floor_covers_a_loss_realised_after_midnight_while_offline(tmp_path, target_registered):
+    rm = RiskManager(RiskLimits(daily_loss_limit_pct=3.0, firm_daily_loss_pct=5.0, firm_margin_pct=0.5),
+                     RiskState(initial_balance=100_000))
+    # Online: the bot's own floor (max(balance, equity) - 3%) is the binding one.
+    rm.start_day("2024-01-02", 100_000, 99_000)
+    assert rm.daily_floor() == 97_000
+    # A backup stop realised -3,000 after midnight: the firm still counts from 100,000.
+    rm.start_day("2024-01-03", 97_000, 97_000, midnight_balance=100_000)
+    assert rm.daily_floor() == 95_500
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    cfg = _cfg(tmp_path, {})
+    assert cfg.limits.firm_daily_loss_pct == 5.0  # from the FTMO preset
+    runner = BotRunner(cfg, ReplayFeed({SYMBOL: bars}, start=1),
+                       PaperBroker({SYMBOL: cfg.instruments["US100"].spec}, {SYMBOL: cfg.instruments["US100"].costs},
+                                   100_000), Recorder(), clock=lambda: datetime(2024, 1, 3, 1, tzinfo=UTC))
+    runner.state["last_balance"] = ["2024-01-02T22:50:00+00:00", 100_000.0]
+    assert runner._midnight_balance(datetime(2024, 1, 3, 1, tzinfo=UTC), 97_000) == 100_000
+    assert runner._midnight_balance(datetime(2024, 1, 9, 1, tzinfo=UTC), 97_000) == 97_000  # too old to trust
 
 
 def test_holiday_friday_moves_the_weekend_close_to_thursday():
@@ -398,7 +421,7 @@ def test_env_file_bom_export_and_comments(tmp_path, monkeypatch):
 def test_reset_kill_cli_writes_a_request(tmp_path, monkeypatch):
     import yaml
 
-    cfg = yaml.safe_load(open("config/config.example.yaml", encoding="utf-8"))
+    cfg = yaml.safe_load(open(EXAMPLE, encoding="utf-8"))
     cfg["runtime"] = {"state_dir": str(tmp_path / "state"), "kill_switch_file": str(tmp_path / "K")}
     path = tmp_path / "c.yaml"
     path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
@@ -407,10 +430,10 @@ def test_reset_kill_cli_writes_a_request(tmp_path, monkeypatch):
 
 
 def test_cli_user_errors_are_clean(tmp_path, capsys):
-    assert main(["backtest", "-c", "config/config.example.yaml", "--slot", "us100_mr",
-                 "--data", "data/US100_D1_NQ_2019_2026.csv", "--params", "{bad json", "--out", str(tmp_path)]) == 2
+    assert main(["backtest", "-c", EXAMPLE, "--slot", "us100_mr",
+                 "--data", str(ROOT / "data" / "missing.csv"), "--params", "{bad json", "--out", str(tmp_path)]) == 2
     assert "not valid JSON" in capsys.readouterr().err
-    assert main(["dryrun", "-c", "config/config.example.yaml", "--data", "NOPE=x.csv",
+    assert main(["dryrun", "-c", EXAMPLE, "--data", "NOPE=x.csv",
                  "--workdir", str(tmp_path)]) == 2
     assert "not an instrument" in capsys.readouterr().err
 

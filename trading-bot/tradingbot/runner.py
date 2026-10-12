@@ -139,6 +139,7 @@ class BotRunner:
             "history": {},
             "guard": {},
             "close_retry_at": "",
+            "last_balance": None,
             "heartbeat_day": "",
             "account": None,
             "fresh": True,
@@ -210,9 +211,11 @@ class BotRunner:
             risk.kill(f"kill switch file {self.kill_file} found")
             self.alerts.send("KILL SWITCH: κλείνω όλες τις θέσεις και σταματάω τις συναλλαγές.")
 
-        new_day = risk.start_day(day_key(now, self.cfg.limits.day_reset_timezone), account.balance, account.equity)
+        new_day = risk.start_day(day_key(now, self.cfg.limits.day_reset_timezone), account.balance, account.equity,
+                                 self._midnight_balance(now, account.balance))
         if new_day:
             log.info("new trading day %s, reference equity %.2f", risk.state.day, risk.state.day_start_ref)
+        self.state["last_balance"] = [now.isoformat(), account.balance]
 
         positions = self._my_positions()
         self._detect_external_closes(positions)
@@ -240,6 +243,18 @@ class BotRunner:
 
         self._heartbeat(now)
         self.save_state()
+
+    def _midnight_balance(self, now: datetime, balance: float) -> float:
+        """The firms' daily reference is the balance at midnight. If the bot was
+        offline over midnight, a loss may have been realised since (e.g. a backup
+        stop): use the higher of the last balance seen (less than a day ago) and now."""
+        last = self.state.get("last_balance")
+        if not last:
+            return balance
+        seen_at, seen = datetime.fromisoformat(last[0]), float(last[1])
+        if timedelta(0) <= now - seen_at <= timedelta(days=1):
+            return max(balance, seen)
+        return balance
 
     # Startup / account ---------------------------------------------------------
     def _startup_checks(self, account) -> None:
@@ -283,6 +298,7 @@ class BotRunner:
             s.initial_balance = self.cfg.initial_balance
             s.peak_equity = max(account.equity, s.initial_balance)
             s.day_start_ref = max(account.balance, account.equity)
+            s.firm_day_ref = account.balance
             s.halted_today = False
             self.risk.reset_kill()
             self.state["account"] = getattr(account, "login", None)

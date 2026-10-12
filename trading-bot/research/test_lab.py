@@ -75,23 +75,69 @@ def test_state_machine_renews_and_max_hold():
     assert list(state_machine(entry, nxt)) == [1, 0, 0, 0, 1, 1, 0]
 
 
-def test_all_trials_run_and_are_causal():
-    """Every trial's returns up to day k must not change when later data is added."""
-    rng = np.random.default_rng(0)
-    n = 900
+def _synthetic(seed=0, n=900):
+    rng = np.random.default_rng(seed)
     c = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.012, n)))
     o = c * np.exp(rng.normal(0, 0.003, n))
     df = frame(c, o)
     df["high"] = np.maximum(df["open"], df["close"]) * (1 + rng.uniform(0, 0.01, n))
     df["low"] = np.minimum(df["open"], df["close"]) * (1 - rng.uniform(0, 0.01, n))
-    vix = 15 + 5 * rng.random(n)
+    return df, 15 + 5 * rng.random(n)
+
+
+def _perturbed(df, vix, cut, rng):
+    """Same history up to row `cut - 1`, different prices and VIX from row `cut` on."""
+    n = len(df)
+    d2, v2 = df.copy(), vix.copy()
+    f = np.exp(rng.normal(0, 0.05, n - cut))
+    for col in ("open", "high", "low", "close"):
+        d2.iloc[cut:, d2.columns.get_loc(col)] = d2[col].to_numpy()[cut:] * f * (1 + rng.uniform(-0.01, 0.01, n - cut))
+    d2["high"] = d2[["open", "high", "low", "close"]].max(axis=1)
+    d2["low"] = d2[["open", "high", "low", "close"]].min(axis=1)
+    v2[cut:] = v2[cut:] * np.exp(rng.normal(0, 0.3, n - cut))
+    return d2, v2
+
+
+def is_causal(trial, cuts=range(320, 890, 9)) -> bool:
+    """Perturb the data from row `cut` on. The positions held through day `cut` were decided
+    at close cut-1 and must not change; nor may the returns before day `cut`. Unlike
+    truncating the sample, perturbing the future also catches a look-ahead of one bar."""
+    df, vix = _synthetic()
+    n = len(df)
     start = df.index[300]
-    cut = 700
+    rng = np.random.default_rng(99)
+    base = Ctx(df, start, np.full(n, 2.0), vix, True, True)
+    ref = trial.build(base) if trial.custom is None else run_trial(trial, base)[0]
+    for cut in cuts:
+        d2, v2 = _perturbed(df, vix, cut, rng)
+        other = Ctx(d2, start, np.full(n, 2.0), v2, True, True)
+        if trial.custom is not None:
+            a, b = ref, run_trial(trial, other)[0]
+            m = a.index < df.index[cut]
+            if not np.allclose(a[m], b[m], atol=1e-12):
+                return False
+        else:
+            got = trial.build(other)
+            for x, y in zip(ref[:2], got[:2]):
+                if not np.allclose(np.nan_to_num(x[:cut + 1]), np.nan_to_num(y[:cut + 1]), atol=1e-12):
+                    return False
+    return True
+
+
+def test_all_trials_run_and_are_causal():
+    df, vix = _synthetic()
+    n = len(df)
     for trial in all_trials():
-        full = run_trial(trial, Ctx(df, start, np.full(n, 2.0), vix, True, True))
-        part = run_trial(trial, Ctx(df.iloc[:cut], start, np.full(cut, 2.0), vix[:cut], True, True))
-        # Calendar rules (H9/H10) use the exchange calendar, known in advance; the truncated
-        # sample's last month is incomplete, so compare them up to a month before the cut.
-        k = cut - 300 - (25 if trial.hyp in ("H9", "H10") else 1)
-        a, b = full[0].iloc[:k], part[0].iloc[:k]
-        np.testing.assert_allclose(a.to_numpy(), b.to_numpy(), atol=1e-12, err_msg=trial.name)
+        out = run_trial(trial, Ctx(df, df.index[300], np.full(n, 2.0), vix, True, True))
+        assert out is not None and np.isfinite(out[0].to_numpy()).all(), trial.name
+        assert is_causal(trial), trial.name
+
+
+def test_causality_check_catches_one_bar_look_ahead():
+    from hypotheses import Trial, _mode_a
+
+    def peek(x):
+        future_up = pd.Series(x.c).shift(-1).to_numpy() > x.c
+        return _mode_a(future_up.astype(float))
+
+    assert not is_causal(Trial("PEEK", {"L": 1}, peek))

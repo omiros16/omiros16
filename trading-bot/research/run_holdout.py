@@ -14,6 +14,7 @@ from run_discovery import context
 from run_validation import ensemble_positions
 
 OUT = Path(__file__).resolve().parent / "output"
+RESULTS = Path(__file__).resolve().parent / "results"
 VOL_TARGET = 0.15
 VOL_CAP = 2.0
 
@@ -48,7 +49,9 @@ def run(ctx: Ctx, vt: bool, mode: str):
 def main() -> None:
     rows = []
     series = {}
-    for s in ("NDX-H", "NQ-H"):
+    # NQ-HA: the NQ series corrected for roll gaps and futures carry after the holdout was run
+    # (datasets.nq_ohlc_spot); NQ-H is kept as originally run.
+    for s in ("NDX-H", "NQ-H", "NQ-HA"):
         for vt in (True, False):
             for mode in ("A", "B"):
                 for cname, costs in (("normal", Costs()), ("stressed", Costs().stressed())):
@@ -63,14 +66,16 @@ def main() -> None:
                     series[(s, label)] = ret
     df = pd.DataFrame(rows)
     df.to_csv(OUT / "holdout.csv", index=False)
+    df.to_csv(RESULTS / "holdout.csv", index=False)
 
     # Calendar-year returns of the decision variant.
     yearly = {}
-    for s in ("NDX-H", "NQ-H"):
+    for s in ("NDX-H", "NQ-H", "NQ-HA"):
         r = series[(s, "MR-ENS-VT mode A normal")]
         yearly[s] = (1 + r).groupby(r.index.year).prod() - 1
     yearly = pd.DataFrame(yearly)
     yearly.to_csv(OUT / "holdout_yearly.csv")
+    yearly.to_csv(RESULTS / "holdout_yearly.csv")
     for (s, label), r in series.items():
         if label == "MR-ENS-VT mode A normal":
             r.to_csv(OUT / f"holdout_returns_{s}.csv")

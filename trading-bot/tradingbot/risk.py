@@ -4,9 +4,14 @@ The same RiskManager runs in the backtest and in the live bot, so a backtest
 shows what the limits would have done.
 
 Loss limits follow the prop firm convention: they are a percentage of the
-*initial* balance. The daily limit is measured from the higher of balance and
-equity at the start of the day (the stricter reading). Set the internal limits
-below the firm's: the bot stops itself before the firm would.
+*initial* balance. The bot's own daily limit is measured from the higher of
+balance and equity at the start of the day. FTMO and E8 measure theirs from the
+balance at midnight, counting floating losses carried over: the higher
+reference keeps the bot's floor above the firm's. A second floor mirrors the
+firm's rule directly (firm_daily_loss_pct minus a safety margin, from the
+midnight balance), for the case where a loss is realised after midnight while
+the bot is offline. Set the internal limits below the firm's: the bot stops
+itself before the firm would.
 """
 
 from __future__ import annotations
@@ -66,8 +71,9 @@ PROP_FIRMS: dict[str, FirmRules] = {
         max_open_positions=100,
         max_lots_per_ticket=50.0,
         weekend_holding=True,
-        notes="Set daily/max drawdown from your dashboard. SL/TP changes count as requests. "
-        "At most 50% of trades under 1 minute. Never risk the whole daily drawdown on one trade.",
+        notes="Daily/max drawdown are chosen at purchase: set risk.firm_daily_loss_pct and your internal limits "
+        "from the dashboard (E8 measures the day from the balance at 00:00 server time). SL/TP changes count as "
+        "requests. At most 50% of trades under 1 minute. Never risk the whole daily drawdown on one trade.",
     ),
     "e8_signature": FirmRules(
         "E8 Signature",
@@ -75,7 +81,8 @@ PROP_FIRMS: dict[str, FirmRules] = {
         max_open_positions=100,
         max_lots_per_ticket=50.0,
         weekend_holding=False,
-        notes="Positions are closed at 23:00 before the weekend. Set drawdown limits from your dashboard.",
+        notes="Positions are closed at 23:00 before the weekend. Set risk.firm_daily_loss_pct and the internal "
+        "limits from your dashboard.",
     ),
 }
 
@@ -102,6 +109,10 @@ class RiskLimits:
     no_new_trades_after_utc: str = "FRI 16:00"
     weekend_reopen_utc: str = "SUN 21:00"
     day_reset_timezone: str = "Europe/Prague"
+    # The firm's own daily loss limit (% of initial, from the midnight balance). Set by
+    # the firm preset; set it by hand for firms whose limit is chosen at purchase (E8).
+    firm_daily_loss_pct: float | None = None
+    firm_margin_pct: float = 0.5  # stop this much before the firm's daily limit
 
     def validate(self) -> None:
         if not 0 < self.risk_per_trade_pct <= 5:
@@ -114,6 +125,8 @@ class RiskLimits:
             raise ValueError("max_trade_risk_share_of_daily must be in (0, 1]")
         if not 0 < self.max_exposure <= 20:
             raise ValueError("max_exposure must be in (0, 20]")
+        if self.firm_daily_loss_pct is not None and not 0 <= self.firm_margin_pct < self.firm_daily_loss_pct:
+            raise ValueError("firm_margin_pct must be >= 0 and below firm_daily_loss_pct")
         parse_weekly_time(self.weekend_close_utc)
         parse_weekly_time(self.no_new_trades_after_utc)
         parse_weekly_time(self.weekend_reopen_utc)
@@ -128,9 +141,10 @@ def apply_firm_rules(limits: RiskLimits, firm: FirmRules) -> tuple[RiskLimits, l
     """
     limits.validate()
     notes: list[str] = []
-    if firm.daily_loss_pct is not None and limits.daily_loss_limit_pct >= firm.daily_loss_pct:
+    firm_daily = firm.daily_loss_pct if firm.daily_loss_pct is not None else limits.firm_daily_loss_pct
+    if firm_daily is not None and limits.daily_loss_limit_pct >= firm_daily:
         raise ValueError(
-            f"daily_loss_limit_pct {limits.daily_loss_limit_pct}% must be below {firm.name}'s {firm.daily_loss_pct}%"
+            f"daily_loss_limit_pct {limits.daily_loss_limit_pct}% must be below {firm.name}'s {firm_daily}%"
         )
     if firm.max_loss_pct is not None and limits.max_drawdown_pct >= firm.max_loss_pct:
         raise ValueError(f"max_drawdown_pct {limits.max_drawdown_pct}% must be below {firm.name}'s {firm.max_loss_pct}%")
@@ -138,6 +152,7 @@ def apply_firm_rules(limits: RiskLimits, firm: FirmRules) -> tuple[RiskLimits, l
         notes.append(f"{firm.name}: drawdown limits are not built in; check your internal limits against your dashboard")
 
     out = RiskLimits(**asdict(limits))
+    out.firm_daily_loss_pct = firm_daily
     if firm.max_requests_per_day is not None and out.max_requests_per_day > firm.max_requests_per_day:
         out.max_requests_per_day = firm.max_requests_per_day
         notes.append(f"max_requests_per_day capped to {firm.max_requests_per_day}")
@@ -235,6 +250,7 @@ class RiskState:
     initial_balance: float
     day: str = ""
     day_start_ref: float = 0.0
+    firm_day_ref: float = 0.0  # balance at the start of the day (the firms' reference)
     peak_equity: float = 0.0
     trades_today: int = 0
     requests_today: int = 0
@@ -269,7 +285,12 @@ class RiskManager:
         return self.state.initial_balance * self.limits.max_drawdown_pct / 100
 
     def daily_floor(self) -> float:
-        return self.state.day_start_ref - self.daily_limit_amount
+        own = self.state.day_start_ref - self.daily_limit_amount
+        firm_pct = self.limits.firm_daily_loss_pct
+        if firm_pct is None or self.state.firm_day_ref <= 0:
+            return own
+        firm = self.state.firm_day_ref - self.state.initial_balance * (firm_pct - self.limits.firm_margin_pct) / 100
+        return max(own, firm)
 
     def drawdown_floor(self) -> float:
         if self.limits.drawdown_mode == "trailing":
@@ -281,13 +302,18 @@ class RiskManager:
         return max(self.daily_floor(), self.drawdown_floor())
 
     # -- state transitions -------------------------------------------------
-    def start_day(self, key: str, balance: float, equity: float) -> bool:
-        """Call on every tick/bar with the current day key. True on a new day."""
+    def start_day(self, key: str, balance: float, equity: float, midnight_balance: float | None = None) -> bool:
+        """Call on every tick/bar with the current day key. True on a new day.
+
+        `midnight_balance` is the best estimate of the balance at the day change
+        (the firms' reference) when it may differ from the balance now.
+        """
         if key == self.state.day:
             return False
         s = self.state
         s.day = key
         s.day_start_ref = max(balance, equity)
+        s.firm_day_ref = balance if midnight_balance is None else midnight_balance
         s.trades_today = 0
         s.requests_today = 0
         s.halted_today = False

@@ -1,0 +1,3 @@
+autocorrelation,years,mean_return,share_positive
+negative (<= 0),26,0.03648471626533832,0.7692307692307693
+positive,39,-0.02850920481970746,0.358974358974359
