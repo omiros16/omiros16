@@ -25,6 +25,8 @@ class Strategy(ABC):
 
     name: ClassVar[str]
     defaults: ClassVar[dict[str, Any]] = {}
+    # True for strategies that emit TARGET exposures (positions protected by backup stops).
+    exposure_based: ClassVar[bool] = False
 
     def __init__(self, **params: Any) -> None:
         unknown = set(params) - set(self.defaults)

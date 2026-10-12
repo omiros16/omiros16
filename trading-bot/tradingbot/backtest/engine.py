@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ..models import CostModel, InstrumentSpec, Position, Side, Signal, SignalKind, Trade
-from ..risk import RiskLimits, RiskManager, RiskState
+from ..risk import RiskLimits, RiskManager, RiskState, us_friday_holiday
 from ..strategies.base import Strategy
 
 
@@ -94,6 +94,14 @@ def _crosses_weekend(cur: pd.Timestamp, nxt: pd.Timestamp) -> bool:
     return any((cur.weekday() + k) % 7 == 5 for k in range(1, days + 1))
 
 
+def _weekend_ahead(cur: pd.Timestamp, nxt: pd.Timestamp) -> bool:
+    """The live bot must be flat before the next bar: a weekend, or a US-holiday Friday
+    (the weekend window then starts on Thursday, as in risk.py)."""
+    if _crosses_weekend(cur, nxt):
+        return True
+    return nxt.normalize() > cur.normalize() and nxt.weekday() == 4 and us_friday_holiday(nxt.date())
+
+
 class _Sim:
     """Mutable simulation state for one backtest run."""
 
@@ -105,8 +113,9 @@ class _Sim:
         self.pos: Position | None = None
         # Exposure-based positions are built from several fills; like the live
         # bot's tickets they are reduced newest first (LIFO). Each lot is
-        # [entry price, volume, entry time]. Which lots are closed decides the
-        # realised balance, and with it the daily loss reference.
+        # [entry price, volume, entry time, swap]. Which lots are closed decides the
+        # realised balance, and with it the daily loss reference. As on MT5, swap
+        # stays in the open position (equity) and reaches the balance at the close.
         self.lots: list[list] = []
         self.trades: list[Trade] = []
         self.skipped: list[str] = []
@@ -128,7 +137,19 @@ class _Sim:
     def equity(self, bid: float) -> float:
         if self.pos is None:
             return self.balance
-        return self.balance + self.pos.unrealized(self.mark(bid), self.vpp)
+        return self.balance + self.pos.unrealized(self.mark(bid), self.vpp) + self.pos.swap
+
+    def charge_swap(self, nights: int, price: float) -> None:
+        """Financing for the nights crossed, kept on the position until it closes."""
+        pos = self.pos
+        assert pos is not None
+        rate = self.cfg.costs.swap_per_lot_night(pos.side, price, self.vpp) * nights
+        if self.lots:
+            for lot in self.lots:
+                lot[3] += rate * lot[1]
+            pos.swap = sum(lot[3] for lot in self.lots)
+        else:
+            pos.swap += rate * pos.volume
 
     # Actions ----------------------------------------------------------------
     def open(self, sig: Signal, t: pd.Timestamp, bid_open: float, equity_now: float) -> None:
@@ -141,7 +162,10 @@ class _Sim:
         if sig.take_profit is not None and (sig.take_profit - fill) * side <= 0:
             self.skipped.append(f"{t}: gapped through target, entry skipped")
             return
-        size = self.risk.size(equity_now, fill, sig.stop_loss, self.cfg.spec, self.cfg.costs)
+        # As the live executor: `fill` already includes spread and entry slippage, so only
+        # the commission is added to the stop distance.
+        sizing_costs = CostModel(spread=0.0, slippage=0.0, commission_per_lot=self.cfg.costs.commission_per_lot)
+        size = self.risk.size(equity_now, fill, sig.stop_loss, self.cfg.spec, sizing_costs)
         if size.volume <= 0:
             self.skipped.append(f"{t}: {size.reason}")
             return
@@ -167,7 +191,7 @@ class _Sim:
         pos = self.pos
         assert pos is not None
         vol = pos.volume if volume is None else min(volume, pos.volume)
-        pieces = []  # (entry price, volume, entry time)
+        pieces = []  # (entry price, volume, entry time, swap)
         if self.lots:
             left = vol
             vmin = self.cfg.spec.volume_min
@@ -176,22 +200,24 @@ class _Sim:
                 take = min(lot[1], left)
                 if lot[1] - take < vmin - 1e-9:
                     take = lot[1]  # like the executor: never leave a ticket below the broker minimum
-                pieces.append((lot[0], take, lot[2]))
+                swap = lot[3] * take / lot[1]
+                pieces.append((lot[0], take, lot[2], swap))
                 lot[1] = round(lot[1] - take, 8)
+                lot[3] -= swap
                 left = round(left - take, 8)
                 if lot[1] <= 1e-9:
                     self.lots.pop()
                 if left < vmin - 1e-9:
                     break
-            vol = min(pos.volume, sum(v for _, v, _ in pieces))
+            vol = min(pos.volume, sum(p[1] for p in pieces))
         else:
-            pieces.append((pos.entry_price, vol, pos.entry_time))
+            pieces.append((pos.entry_price, vol, pos.entry_time, pos.swap * vol / pos.volume))
         total = pos.volume
-        for entry, v, when in pieces:
+        for entry, v, when, swap in pieces:
             share = v / total
             commission = self.cfg.costs.commission_per_lot * v
             gross = (price - entry) * int(pos.side) * v * self.vpp
-            self.balance += gross - commission
+            self.balance += gross - commission + swap
             self.trades.append(
                 Trade(
                     symbol=pos.symbol,
@@ -203,7 +229,7 @@ class _Sim:
                     exit_price=price,
                     gross_pnl=gross,
                     commission=pos.commission * share + commission,
-                    swap=pos.swap * share,
+                    swap=swap,
                     reason=reason,
                     initial_risk=pos.initial_risk * share,
                     balance_after=self.balance,
@@ -217,10 +243,10 @@ class _Sim:
             share = vol / pos.volume
             pos.volume = round(pos.volume - vol, 8)
             pos.commission *= 1 - share
-            pos.swap *= 1 - share
+            pos.swap = sum(lot[3] for lot in self.lots) if self.lots else pos.swap * (1 - share)
             pos.initial_risk *= 1 - share
             if self.lots:
-                pos.entry_price = sum(e * v for e, v, _ in self.lots) / sum(v for _, v, _ in self.lots)
+                pos.entry_price = sum(lot[0] * lot[1] for lot in self.lots) / sum(lot[1] for lot in self.lots)
 
     def rebalance(self, sig: Signal, t: pd.Timestamp, bid_open: float, equity_now: float, now_utc=None) -> None:
         """Resize the long position to sig.exposure x equity at this open."""
@@ -241,7 +267,7 @@ class _Sim:
             fill = self.buy_price(bid_open)
             commission = costs.commission_per_lot * diff
             self.balance -= commission
-            self.lots.append([fill, round(diff, 8), t])
+            self.lots.append([fill, round(diff, 8), t, 0.0])
             if self.pos is None:
                 self.pos = Position(self.symbol, Side.LONG, round(diff, 8), fill, t, commission=commission,
                                     comment=sig.reason)
@@ -267,7 +293,7 @@ class _Sim:
         assert pos is not None
         floor = self.risk.equity_floor()
         reason = "max drawdown limit" if floor == self.risk.drawdown_floor() else "daily loss limit"
-        price = pos.entry_price + (floor - self.balance) / (pos.volume * self.vpp) * int(pos.side)
+        price = pos.entry_price + (floor - self.balance - pos.swap) / (pos.volume * self.vpp) * int(pos.side)
         return price, reason
 
     def intrabar_exit(self, t: pd.Timestamp, o: float, h: float, low: float) -> None:
@@ -303,7 +329,7 @@ class _Sim:
             # Still open: the live bot polls equity during the bar, so a trailing
             # drawdown peak follows the best price of the bar. The adverse
             # extreme is assumed to come first (pessimistic for the stops).
-            best = self.balance + pos.unrealized(favorable, self.vpp)
+            best = self.balance + pos.unrealized(favorable, self.vpp) + pos.swap
             self.risk.state.peak_equity = max(self.risk.state.peak_equity, best)
             return
         self.risk.register_request()
@@ -320,7 +346,6 @@ def run_backtest(bars: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig, sy
     c = data["close"].to_numpy(float)
     sim = _Sim(cfg, symbol or cfg.spec.symbol)
     risk = sim.risk
-    costs = cfg.costs
     equity_curve = np.empty(n)
     in_pos = np.zeros(n, dtype=bool)
     pending: Signal | None = None
@@ -337,11 +362,7 @@ def run_backtest(bars: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig, sy
         # 1) New day: financing for the nights crossed, then reset daily limits.
         if i > 0 and t.normalize() != idx[i - 1].normalize():
             if sim.pos is not None:
-                nights = (t.normalize() - idx[i - 1].normalize()).days
-                rate = costs.swap_per_lot_night(sim.pos.side, c[i - 1], sim.vpp)
-                swap = nights * rate * sim.pos.volume
-                sim.pos.swap += swap
-                sim.balance += swap
+                sim.charge_swap((t.normalize() - idx[i - 1].normalize()).days, c[i - 1])
         # The live bot takes the day's reference at its first poll of the day,
         # when the new daily bar has just opened: equity at this open.
         risk.start_day(t.strftime("%Y-%m-%d"), sim.balance, sim.equity(o[i]) if sim.pos is not None else sim.balance)
@@ -383,7 +404,7 @@ def run_backtest(bars: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig, sy
             sim.pos is not None
             and cfg.limits.close_before_weekend
             and i + 1 < n
-            and _crosses_weekend(t, idx[i + 1])
+            and _weekend_ahead(t, idx[i + 1])
         ):
             sim.close_market(t, c[i], "weekend close")
             equity = sim.balance

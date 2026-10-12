@@ -176,7 +176,7 @@ def test_runner_rebalances_to_zero_without_false_alerts(tmp_path):
         plan = {bars.index[0].isoformat(): 1.0, bars.index[1].isoformat(): 0.4, bars.index[2].isoformat(): 0.0}
         raw = {
             "account": {"prop_firm": "ftmo_swing", "initial_balance": 100_000},
-            "risk": {"max_lots_per_ticket": 400},
+            "risk": {"max_lots_per_ticket": 400, "max_open_positions": 10},
             "instruments": {"US100": {"broker_symbol": "US100.cash", "volume_max": 1000,
                                       "costs": {"spread": 0.0, "slippage": 0.0}}},
             "strategies": [{"id": "mr", "symbol": "US100", "timeframe": "D1", "strategy": "target_plan",

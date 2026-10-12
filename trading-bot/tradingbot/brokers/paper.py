@@ -134,6 +134,7 @@ class PaperBroker(Broker):
     def account(self) -> AccountInfo:
         equity = self.balance
         for pos in self._positions.values():
+            equity += pos.swap  # as on MT5, swap stays on the position until it is closed
             try:
                 equity += pos.unrealized(self._mark(pos), self.spec(pos.symbol).value_per_point)
             except BrokerError:
@@ -181,7 +182,9 @@ class PaperBroker(Broker):
         if volume is not None and volume < pos.volume - 1e-9:
             vpp = self.spec(pos.symbol).value_per_point
             part = replace(pos, volume=volume)
-            self.balance += part.unrealized(price, vpp) - self.costs[pos.symbol].commission_per_lot * volume
+            swap = pos.swap * volume / pos.volume
+            self.balance += part.unrealized(price, vpp) - self.costs[pos.symbol].commission_per_lot * volume + swap
+            pos.swap -= swap
             pos.volume = round(pos.volume - volume, 8)
             self._save()
             return Fill(price, volume)
@@ -199,13 +202,16 @@ class PaperBroker(Broker):
     def _settle(self, pos: Position, price: float) -> None:
         vpp = self.spec(pos.symbol).value_per_point
         commission = self.costs[pos.symbol].commission_per_lot * pos.volume
-        self.balance += pos.unrealized(price, vpp) - commission
+        self.balance += pos.unrealized(price, vpp) - commission + pos.swap
         del self._positions[pos.ticket]
         self._swap_day.pop(pos.ticket, None)
         self._save()
 
     def _charge_swap(self, pos: Position, t: pd.Timestamp, price: float) -> None:
-        """Financing for every rollover (midnight, server time) between the last charge and `t`."""
+        """Financing for every rollover (midnight, server time) between the last charge and `t`.
+
+        Kept on the position (in equity) until it closes, as MT5 does: the balance,
+        and with it the day's loss reference, only changes when a ticket closes."""
         day = t.normalize()
         since = self._swap_day.get(pos.ticket, pos.entry_time.normalize())
         if day <= since or pos.entry_time >= t:
@@ -214,7 +220,6 @@ class PaperBroker(Broker):
         nights = (day - since).days
         swap = nights * cost.swap_per_lot_night(pos.side, price, self.spec(pos.symbol).value_per_point) * pos.volume
         pos.swap += swap
-        self.balance += swap
         self._swap_day[pos.ticket] = day
 
     def on_bars(self, symbol: str, bars: pd.DataFrame) -> list[tuple[Position, float, str]]:
@@ -240,8 +245,9 @@ class PaperBroker(Broker):
                         price, reason = hit
                         closed.append((replace(pos), price, reason))
                         self._settle(pos, price)
-        self._last_bar[symbol] = bars.index[-1]
-        self._last_close[symbol] = float(bars["close"].iloc[-1])
+        if last is None or bars.index[-1] > last:  # never move back on a stale window
+            self._last_bar[symbol] = bars.index[-1]
+            self._last_close[symbol] = float(bars["close"].iloc[-1])
         self._save()
         return closed
 

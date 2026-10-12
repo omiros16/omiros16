@@ -120,6 +120,7 @@ def rule_states(bars: pd.DataFrame) -> pd.DataFrame:
 
 class MREnsemble(Strategy):
     name = "mr_ensemble"
+    exposure_based = True
     defaults = {
         "leverage": 1.0,
         "vol_target": 0.15,

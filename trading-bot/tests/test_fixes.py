@@ -40,6 +40,7 @@ class TargetPlan(Strategy):
 
     name = "target_plan_fix"
     defaults = {"plan": {}}
+    exposure_based = True
 
     @property
     def warmup_bars(self) -> int:
@@ -163,7 +164,8 @@ def test_firm_floor_covers_a_loss_realised_after_midnight_while_offline(tmp_path
                                    100_000), Recorder(), clock=lambda: datetime(2024, 1, 3, 1, tzinfo=UTC))
     runner.state["last_balance"] = ["2024-01-02T22:50:00+00:00", 100_000.0]
     assert runner._midnight_balance(datetime(2024, 1, 3, 1, tzinfo=UTC), 97_000) == 100_000
-    assert runner._midnight_balance(datetime(2024, 1, 9, 1, tzinfo=UTC), 97_000) == 97_000  # too old to trust
+    # Offline over a weekend: still the last balance seen (it can only have fallen since).
+    assert runner._midnight_balance(datetime(2024, 1, 8, 1, tzinfo=UTC), 97_000) == 100_000
 
 
 def test_holiday_friday_moves_the_weekend_close_to_thursday():
@@ -443,3 +445,201 @@ def test_parse_config_rejects_bad_types():
             "instruments": {"US100": {"value_per_point": "1"}}}
     with pytest.raises(ConfigError, match="number"):
         parse_config(base)
+
+
+# Second review round ----------------------------------------------------------------------
+def _paper(cfg, feed, symbol=SYMBOL, cls=PaperBroker, **kw):
+    inst = next(i for i in cfg.instruments.values() if i.broker_symbol == symbol)
+    return cls({symbol: inst.spec}, {symbol: inst.costs}, 100_000, quote_source=feed.quote, **kw)
+
+
+class HalfFill(PaperBroker):
+    """Fills half of the first order (MT5 retcode 10010), then everything."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.half = 1
+
+    def open(self, symbol, side, volume, sl, tp, magic, comment):
+        if self.half:
+            self.half -= 1
+            volume = round(volume / 2, 2)
+        return super().open(symbol, side, volume, sl, tp, magic, comment)
+
+
+def test_partly_filled_increase_is_retried(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 4)
+    cfg = _cfg(tmp_path, {bars.index[0].isoformat(): 1.0}, risk={"max_open_positions": 10})
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    broker = _paper(cfg, feed, cls=HalfFill)
+    now = [datetime(2024, 1, 2, 0, 1, tzinfo=UTC)]
+    runner = BotRunner(cfg, feed, broker, Recorder(), clock=lambda: now[0])
+    runner.step()
+    assert sum(p.volume for p in broker.positions()) == pytest.approx(500.0)
+    assert "partly increased" in runner.state["pending"]["s1"]["last_error"]
+    now[0] += timedelta(minutes=2)
+    runner.step()
+    assert sum(p.volume for p in broker.positions()) == pytest.approx(1000.0) and not runner.state["pending"]
+
+
+def test_ticket_chunks_never_exceed_the_per_ticket_cap(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    cfg = _cfg(tmp_path, {bars.index[0].isoformat(): 0.14999},
+               risk={"max_lots_per_ticket": 50, "max_open_positions": 10})
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    broker = _paper(cfg, feed)
+    BotRunner(cfg, feed, broker, Recorder(), clock=lambda: datetime(2024, 1, 2, 0, 1, tzinfo=UTC)).step()
+    vols = [p.volume for p in broker.positions()]
+    assert sum(vols) == pytest.approx(149.99) and max(vols) <= 50
+
+
+def test_target_below_the_broker_minimum_flattens_live(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 4)
+    plan = {bars.index[0].isoformat(): 0.0012, bars.index[1].isoformat(): 0.0005}  # 1.2 lots, then 0.5 lots
+    cfg = _cfg(tmp_path, plan, extra={"instruments": {"US100": {
+        "broker_symbol": SYMBOL, "volume_min": 1.0, "volume_step": 0.1, "volume_max": 1000,
+        "costs": {"spread": 0.0, "slippage": 0.0}}}})
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    broker = _paper(cfg, feed)
+    runner = BotRunner(cfg, feed, broker, Recorder(), clock=lambda: feed.quote(SYMBOL).time.to_pydatetime().replace(tzinfo=UTC))
+    runner.step()
+    assert sum(p.volume for p in broker.positions()) == pytest.approx(1.2)
+    feed.advance()
+    runner.step()
+    assert broker.positions() == []
+
+
+def test_backup_stops_of_two_slots_add_up_to_the_room(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    plan = {bars.index[0].isoformat(): 1.0}
+    raw = {
+        "account": {"prop_firm": "ftmo_swing", "initial_balance": 100_000},
+        "risk": {"max_open_positions": 10},
+        "instruments": {
+            "US100": {"broker_symbol": "A", "volume_max": 1000, "costs": {"spread": 0.0, "slippage": 0.0}},
+            "US500": {"broker_symbol": "B", "volume_max": 1000, "costs": {"spread": 0.0, "slippage": 0.0}},
+        },
+        "strategies": [
+            {"id": "a", "symbol": "US100", "timeframe": "D1", "strategy": TargetPlan.name, "magic": 1, "params": {"plan": plan}},
+            {"id": "b", "symbol": "US500", "timeframe": "D1", "strategy": TargetPlan.name, "magic": 2, "params": {"plan": plan}},
+        ],
+        "runtime": {"state_dir": str(tmp_path / "s"), "log_dir": str(tmp_path / "l"), "kill_switch_file": str(tmp_path / "K")},
+    }
+    cfg = parse_config({**raw, "risk": {"max_open_positions": 10, "max_exposure": 3.0}})
+    feed = ReplayFeed({"A": bars, "B": bars}, start=1)
+    specs = {i.broker_symbol: i.spec for i in cfg.instruments.values()}
+    costs = {i.broker_symbol: i.costs for i in cfg.instruments.values()}
+    broker = PaperBroker(specs, costs, 100_000, quote_source=feed.quote)
+    runner = BotRunner(cfg, feed, broker, Recorder(), clock=lambda: datetime(2024, 1, 2, 0, 1, tzinfo=UTC))
+    runner.step()
+    positions = broker.positions()
+    assert {p.symbol for p in positions} == {"A", "B"}
+    loss_if_all_stopped = sum((100 - p.stop_loss) * p.volume for p in positions)
+    room = broker.account().equity - runner.risk.equity_floor()
+    assert loss_if_all_stopped == pytest.approx(room, rel=0.01)
+
+
+def test_rebase_starts_the_new_accounts_day_from_its_own_balance(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    cfg = _cfg(tmp_path, {})
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    broker = _paper(cfg, feed)
+    (tmp_path / "s").mkdir()
+    (tmp_path / "s" / "bot_state.json").write_text(json.dumps({
+        "risk": {"initial_balance": 100_000, "day": "2024-01-01"}, "account": 111, "known": {"7": "s1"},
+        "last_balance": ["2024-01-01T22:00:00+00:00", 110_000.0]}), encoding="utf-8")
+    broker.account = lambda: SimpleNamespace(balance=100_000.0, equity=100_000.0, login=222)
+    (tmp_path / "s" / RESET_FILE).write_text("rebase")
+    alerts = Recorder()
+    runner = BotRunner(cfg, feed, broker, alerts, clock=lambda: datetime(2024, 1, 2, 8, tzinfo=UTC))
+    runner.step()
+    assert not runner.risk.state.halted_today and runner.risk.daily_floor() == pytest.approx(97_000)
+    assert runner.state["known"] == {} and any("προηγούμενο λογαριασμό" in m for m in alerts.sent)
+
+
+def test_close_backoff_resets_once_the_positions_are_gone(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    cfg = _cfg(tmp_path, {})
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    runner = BotRunner(cfg, feed, _paper(cfg, feed), Recorder(), clock=lambda: datetime(2024, 1, 2, 1, tzinfo=UTC))
+    runner.state["close_attempts"] = 5
+    runner.state["close_retry_at"] = "2024-01-02T01:15:00+00:00"
+    runner.step()
+    assert runner.state["close_attempts"] == 0 and runner.state["close_retry_at"] == ""
+
+
+def test_risk_loop_runs_without_enabled_slots(tmp_path, target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    cfg = _cfg(tmp_path, {})
+    cfg.slots[0].enabled = False
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    broker = _paper(cfg, feed)
+    broker.open(SYMBOL, Side.LONG, 5.0, 90.0, None, 9, "left over")
+    (tmp_path / "K").write_text("stop")
+    BotRunner(cfg, feed, broker, Recorder(), clock=lambda: datetime(2024, 1, 2, 1, tzinfo=UTC)).step()
+    assert broker.positions() == []
+
+
+def test_paper_swap_stays_on_the_position_until_it_closes():
+    spec = InstrumentSpec(SYMBOL, 1.0, 0.01, 100, 0.01)
+    costs = CostModel(spread=0.0, slippage=0.0, swap_long_per_lot=-1.0)
+    bars = make_frame([(100, 101, 99, 100)] * 4)
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    b = PaperBroker({SYMBOL: spec}, {SYMBOL: costs}, 10_000, quote_source=feed.quote)
+    b.on_bars(SYMBOL, bars.iloc[:1])
+    pos = b.open(SYMBOL, Side.LONG, 2.0, 50.0, None, 7, "t")  # filled at bar 1's open
+    b.on_bars(SYMBOL, bars.iloc[:3])  # bars 1 and 2 close: one rollover held
+    acct = b.account()
+    assert acct.balance == 10_000 and acct.equity == pytest.approx(10_000 - 2.0)
+    feed.advance(2)  # quotes now at bar 3's open: a second rollover before the close
+    b.close(pos, "x")
+    assert b.account().balance == pytest.approx(10_000 - 4.0)
+
+
+def test_paper_bar_cursor_never_moves_back():
+    spec = InstrumentSpec(SYMBOL, 1.0, 0.01, 100, 0.01)
+    bars = make_frame([(100, 101, 99, 100), (100, 101, 99, 100), (100, 101, 98, 100), (100, 101, 99.5, 100)])
+    b = PaperBroker({SYMBOL: spec}, {SYMBOL: CostModel(spread=0.0, slippage=0.0)}, 10_000)
+    b.on_bars(SYMBOL, bars.iloc[:1])
+    pos = b.open(SYMBOL, Side.LONG, 1.0, 95.0, None, 7, "t")
+    b.on_bars(SYMBOL, bars.iloc[:3])
+    b.on_bars(SYMBOL, bars.iloc[:1])  # a stale window
+    b.modify(pos, 98.5, None)  # stop raised after bar 2 (low 98) was settled
+    assert b.on_bars(SYMBOL, bars) == []  # only bar 3 (low 99.5) is new
+
+
+def test_mt5_open_without_a_stop_sends_zero(fake_mt5):
+    from tradingbot.brokers.mt5_broker import MT5Broker
+
+    client = MT5Client(mt5_module=fake_mt5)
+    client.connect()
+    MT5Broker(client, retry_delay=0).open(SYMBOL, Side.LONG, 1.0, None, None, 7, "x")
+    assert fake_mt5.requests[-1]["sl"] == 0.0
+
+
+def test_engine_flattens_before_a_us_holiday_friday(target_registered):
+    rows = [(100, 101, 99, 100)] * 4
+    bars = pd.DataFrame(rows, columns=["open", "high", "low", "close"], dtype=float,
+                        index=pd.DatetimeIndex(["2025-07-01", "2025-07-02", "2025-07-03", "2025-07-04"], name="time"))
+    strat = create_strategy(TargetPlan.name, {"plan": {bars.index[0].isoformat(): 1.0}})
+    res = run_backtest(bars, strat, _bt(close_before_weekend=True))
+    assert res.trades and res.trades[0].reason == "weekend close"
+    assert res.trades[0].exit_time == pd.Timestamp("2025-07-03")  # Thursday: Friday 4 July is a holiday
+
+
+def test_engine_books_each_lots_own_swap(target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 10)
+    plan = {bars.index[0].isoformat(): 0.1, bars.index[5].isoformat(): 0.2, bars.index[6].isoformat(): 0.1}
+    cfg = BacktestConfig(InstrumentSpec("X", 1.0, 0.01, 1e6, 0.01),
+                         CostModel(spread=0, slippage=0, swap_long_per_lot=-1.0), RiskLimits())
+    res = run_backtest(bars, create_strategy(TargetPlan.name, {"plan": plan}), cfg)
+    newest = next(t for t in res.trades if t.entry_time == bars.index[6])  # added at bar 6, cut at bar 7
+    assert newest.swap == pytest.approx(-newest.volume)  # one night, not a share of the old lot's swap
+    assert sum(t.net_pnl for t in res.trades) == pytest.approx(res.equity.iloc[-1] - 100_000)
+
+
+def test_csv_dates_with_dashes(tmp_path):
+    (tmp_path / "mdy.csv").write_text("Date,Open,High,Low,Close\n01-15-2024,1,2,0.5,1.5\n01-16-2024,1,2,0.5,1.5\n")
+    assert list(load_bars_csv(tmp_path / "mdy.csv").index.year) == [2024, 2024]
+    (tmp_path / "dmy.csv").write_text("Date,Open,High,Low,Close\n15-01-2024,1,2,0.5,1.5\n16-01-2024,1,2,0.5,1.5\n")
+    assert list(load_bars_csv(tmp_path / "dmy.csv").index.day) == [15, 16]

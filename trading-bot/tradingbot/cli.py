@@ -183,7 +183,7 @@ def cmd_backtest(args) -> int:
         raise ConfigError("--trials must be >= 1")
     strat = _strategy(slot.strategy, {**slot.params, **_json_params(args.params)})
     bars, trade_from = _load_with_warmup(args.data, args.start, args.end, strat.warmup_bars)
-    bt = replace(_bt_config(cfg, slot.symbol), trade_from=trade_from)
+    bt = replace(_bt_config(cfg, slot.symbol), trade_from=trade_from, utc_offset_hours=args.utc_offset)
     res = run_backtest(bars, strat, bt, cfg.instruments[slot.symbol].broker_symbol)
     metrics = res.metrics(n_trials=args.trials)
     print(f"== {slot.id}: {slot.strategy} on {args.data} ==")
@@ -219,7 +219,8 @@ def cmd_walkforward(args) -> int:
           f"grid {slot.grid or '{}'} ==")
     try:
         res = walk_forward(
-            bars, slot.strategy, slot.params, slot.grid, _bt_config(cfg, slot.symbol),
+            bars, slot.strategy, slot.params, slot.grid,
+            replace(_bt_config(cfg, slot.symbol), utc_offset_hours=args.utc_offset),
             int(wf["in_sample_bars"]), int(wf["out_sample_bars"]), wf["objective"], int(wf["min_trades"]),
             cfg.instruments[slot.symbol].broker_symbol,
         )
@@ -514,6 +515,15 @@ def cmd_dryrun(args) -> int:
         print(f"{slot.symbol} ({inst.broker_symbol}): {source}")
         if not _bar_spacing_ok(data[inst.broker_symbol], slot.timeframe):
             print(f"  WARNING: these bars do not look like {slot.timeframe} bars (slot {slot.id})")
+    if len(data) > 1:
+        # One cursor drives every symbol: replay only the dates all of them have.
+        common = None
+        for df in data.values():
+            common = df.index if common is None else common.intersection(df.index)
+        for sym, df in data.items():
+            if len(df) != len(common):
+                print(f"note: {sym}: {len(df) - len(common)} bars without a match in the other files are skipped")
+            data[sym] = df.loc[common]
     unused = set(files) - {s.symbol for s in enabled}
     if unused:
         print(f"note: no enabled slot trades {sorted(unused)}; those files are not used")
@@ -632,6 +642,9 @@ def build_parser() -> argparse.ArgumentParser:
                         if name == "backtest" else "first date of the data to use")
         sp.add_argument("--end")
         sp.add_argument("--out", default="reports")
+        sp.add_argument("--utc-offset", type=float, default=0.0,
+                        help="hours between the bar times and UTC, for the weekend rules on intraday bars "
+                             "(MT5 server time of FTMO/E8: 2 in winter, 3 in summer; daily bars: 0)")
         if name == "backtest":
             sp.add_argument("--params", help='JSON overrides, e.g. \'{"leverage": 1.0}\'')
             sp.add_argument("--trials", type=int, default=1,

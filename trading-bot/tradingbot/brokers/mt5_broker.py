@@ -122,7 +122,7 @@ class MT5Broker(Broker):
                 "volume": float(volume),
                 "type": order_type,
                 "price": q.ask if side is Side.LONG else q.bid,
-                "sl": round(sl, digits),
+                "sl": round(sl, digits) if sl else 0.0,
                 "tp": round(tp, digits) if tp else 0.0,
                 "deviation": self.deviation,
                 "magic": magic,

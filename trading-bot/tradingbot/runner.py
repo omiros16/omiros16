@@ -105,18 +105,21 @@ class BotRunner:
         self.broker = broker
         self.alerts = alerts or Alerts()
         self.clock = clock
+        # With no enabled slot the bot still runs its risk loop (kill switch, loss limits,
+        # weekend close) over the positions of the configured slots.
         self.slots = [s for s in cfg.slots if s.enabled]
-        if not self.slots:
-            raise ValueError("no enabled strategy slots in the config")
         self.strategies = {s.id: create_strategy(s.strategy, s.params) for s in self.slots}
         # Risk protection (kill switch, daily loss, max drawdown, weekend) covers the
         # positions of EVERY configured slot, enabled or not: disabling a slot must
         # never leave its open position unprotected.
         self.magics = {s.magic: s for s in cfg.slots}
-        # Simulated stops/swaps run once per symbol, on its finest timeframe.
-        self.stop_slot: dict[str, str] = {}
-        for s in sorted(self.slots, key=lambda s: TIMEFRAMES.index(s.timeframe), reverse=True):
-            self.stop_slot[cfg.instruments[s.symbol].broker_symbol] = s.id
+        self.exposure_magics = {s.magic for s in cfg.slots
+                                if create_strategy(s.strategy, s.params).exposure_based}
+        # Simulated stops/swaps run once per symbol, on its finest timeframe (enabled slots
+        # first; a disabled slot's symbol is processed while it still has positions).
+        self.stop_slot: dict[str, Slot] = {}
+        for s in sorted(cfg.slots, key=lambda s: (s.enabled, TIMEFRAMES.index(s.timeframe))):
+            self.stop_slot[cfg.instruments[s.symbol].broker_symbol] = s
 
         rt = cfg.runtime
         self.state_path = Path(rt.state_dir) / "bot_state.json"
@@ -126,6 +129,7 @@ class BotRunner:
         self.state = self._load_state()
         self.risk = RiskManager(cfg.limits, self.state["risk"])
         self._started = False
+        self._resized = False
         self._bars_cache: dict[tuple[str, str, int], pd.DataFrame] = {}
         self._account_blocked = ""
 
@@ -166,7 +170,8 @@ class BotRunner:
     def run_forever(self) -> None:
         poll = self.cfg.runtime.poll_seconds
         backoff = poll
-        self.alerts.send(f"Bot ξεκίνησε: {', '.join(s.id for s in self.slots)} | firm: {self.cfg.prop_firm}")
+        self.alerts.send(f"Bot ξεκίνησε: {', '.join(s.id for s in self.slots) or 'κανένα ενεργό slot (μόνο έλεγχος ρίσκου)'}"
+                         f" | firm: {self.cfg.prop_firm}")
         try:
             while True:
                 try:
@@ -189,6 +194,7 @@ class BotRunner:
         now = self.clock()
         risk = self.risk
         self._bars_cache = {}
+        self._resized = False
         # A simulated broker settles the stops hit during the bars that closed since
         # the last poll first: they belong to the day that just ended, before the
         # day reset below moves the stops.
@@ -201,7 +207,7 @@ class BotRunner:
         if not self._started:
             self._startup_checks(account)
             self._started = True
-        self._consume_reset_request(account)
+        self._consume_reset_request(account, now)
         if self._account_blocked:
             self.alerts.send(self._account_blocked, dedupe_seconds=3600)
             self.save_state()
@@ -219,6 +225,9 @@ class BotRunner:
 
         positions = self._my_positions()
         self._detect_external_closes(positions)
+        if not positions:  # a new close episode starts with the shortest retry delay
+            self.state["close_attempts"] = 0
+            self.state["close_retry_at"] = ""
 
         event = risk.check_equity(account.equity)
         if event == "max_drawdown":
@@ -240,21 +249,27 @@ class BotRunner:
                 except Exception as exc:  # one slot's data or broker error must not stop the others
                     log.exception("%s: %s failed", slot.id, action.__name__)
                     self.alerts.send(f"{slot.id}: {type(exc).__name__}: {exc}", dedupe_seconds=900)
+        if self._resized:
+            # Backup stops share the room to the floor between slots by notional: after any
+            # resize, recompute every slot's stop from the final sizes.
+            try:
+                self._refresh_stops(self._my_positions())
+            except Exception:
+                log.exception("backup stop refresh failed")
 
         self._heartbeat(now)
         self.save_state()
 
     def _midnight_balance(self, now: datetime, balance: float) -> float:
         """The firms' daily reference is the balance at midnight. If the bot was
-        offline over midnight, a loss may have been realised since (e.g. a backup
-        stop): use the higher of the last balance seen (less than a day ago) and now."""
+        offline over midnight (a night, a weekend), a loss may have been realised since
+        by a backup stop. While the bot is offline the balance can only fall, so the
+        last balance it saw is a safe (high) estimate: use the higher of the two."""
         last = self.state.get("last_balance")
         if not last:
             return balance
         seen_at, seen = datetime.fromisoformat(last[0]), float(last[1])
-        if timedelta(0) <= now - seen_at <= timedelta(days=1):
-            return max(balance, seen)
-        return balance
+        return max(balance, seen) if seen_at <= now else balance
 
     # Startup / account ---------------------------------------------------------
     def _startup_checks(self, account) -> None:
@@ -287,7 +302,7 @@ class BotRunner:
                 f"{self.magics[p.magic].id}: δεν θα γίνει rebalance, μόνο έλεγχος ρίσκου. Κλείσ' τη ή ενεργοποίησε το slot."
             )
 
-    def _consume_reset_request(self, account) -> None:
+    def _consume_reset_request(self, account, now: datetime) -> None:
         """`python -m tradingbot reset-kill` leaves a request file; apply it here (the bot owns the state)."""
         if not self.reset_path.exists():
             return
@@ -300,7 +315,16 @@ class BotRunner:
             s.day_start_ref = max(account.balance, account.equity)
             s.firm_day_ref = account.balance
             s.halted_today = False
+            # The new account's day starts now, from its own balance (not the old account's).
+            s.day = day_key(now, self.cfg.limits.day_reset_timezone)
+            s.trades_today = s.requests_today = 0
+            self.state["last_balance"] = [now.isoformat(), account.balance]
             self.risk.reset_kill()
+            old_tickets = sorted(self.state["known"])
+            if old_tickets and getattr(account, "login", None) != self.state.get("account"):
+                self.alerts.send(f"Προσοχή: tickets {old_tickets} έμειναν ανοιχτά στον προηγούμενο λογαριασμό "
+                                 f"{self.state.get('account')}; το bot δεν τα παρακολουθεί πια.")
+            self.state["known"] = {}
             self.state["account"] = getattr(account, "login", None)
             self.state["pending"] = {}
             self._account_blocked = ""
@@ -363,21 +387,30 @@ class BotRunner:
     def _bars(self, slot: Slot) -> pd.DataFrame:
         """Closed bars for a slot, fetched once per poll."""
         symbol = self.cfg.instruments[slot.symbol].broker_symbol
-        key = (symbol, slot.timeframe, self.strategies[slot.id].warmup_bars + 50)
+        count = self.strategies[slot.id].warmup_bars + 50 if slot.id in self.strategies else 60
+        key = (symbol, slot.timeframe, count)
         if key not in self._bars_cache:
             self._bars_cache[key] = self.feed.bars(*key)
         return self._bars_cache[key]
 
     def _simulate_fills(self) -> None:
-        for symbol, slot_id in self.stop_slot.items():
-            slot = next(s for s in self.slots if s.id == slot_id)
+        held = {p.symbol for p in self.broker.positions()}
+        for symbol, slot in self.stop_slot.items():
+            if slot.id not in self.strategies and symbol not in held:
+                continue
             try:
                 bars = self._bars(slot)
             except Exception:
                 log.exception("%s: no bars for the paper stops", symbol)
                 continue
-            for pos, price, reason in self.broker.on_bars(symbol, bars):
+            fills = self.broker.on_bars(symbol, bars)
+            for pos, price, reason in fills:
                 self._on_closed(pos, price, reason)
+            last = self.state.get("last_balance")
+            if fills and last:
+                # These stops were hit during bars that closed before this poll (on the
+                # previous day): their losses were realised before midnight.
+                self.state["last_balance"] = [last[0], self.broker.account().balance]
 
     def _try_pending(self, slot: Slot, now: datetime) -> None:
         pending = self.state["pending"].get(slot.id)
@@ -451,26 +484,39 @@ class BotRunner:
             if not ok:
                 # Killed: nothing to do. Halted / weekend window / request budget: retry later.
                 return risk.state.killed, f"increase refused: {why}"
-            cap = min(self.cfg.limits.max_lots_per_ticket or spec.volume_max, spec.volume_max)
-            chunks = max(1, math.ceil(diff / cap - 1e-9))
-            chunk = _floor_step(diff / chunks, spec.volume_step)
             sl = self._backup_stop(account.equity, q.bid, current + diff, spec, slot.magic)
-            opened_total = 0.0
-            for k in range(chunks):
-                lots = chunk if k < chunks - 1 else round(diff - chunk * (chunks - 1), 8)
-                if lots < spec.volume_min - 1e-9:
-                    break
+            if sl is None:
+                return False, "increase refused: no room above the loss floor"
+            cap = _floor_step(min(self.cfg.limits.max_lots_per_ticket or spec.volume_max, spec.volume_max),
+                              spec.volume_step)
+            tickets_left = self.cfg.limits.max_open_positions - len(self._my_positions())
+            opened_total, remaining, partial = 0.0, diff, False
+            while remaining >= spec.volume_min - 1e-9 and tickets_left > 0:
+                lots = min(cap, _floor_step(remaining, spec.volume_step))
                 opened = self._counted(lambda: self.broker.open(symbol, Side.LONG, lots, sl, None, slot.magic, slot.id))
                 self.state["known"][int(opened.ticket)] = slot.id
+                self._resized = True
+                tickets_left -= 1
                 opened_total += opened.volume
+                remaining = round(remaining - opened.volume, 8)
+                if opened.volume < lots - 1e-9:
+                    partial = True  # partly filled: the retry recomputes from the real positions
+                    break
             if current == 0 and opened_total > 0:
                 risk.register_trade()
-            self.alerts.send(
-                f"{slot.id}: {symbol} {current:.2f} -> {current + opened_total:.2f} lots (έκθεση {sig.exposure:.2f}x) "
-                f"@ ~{q.ask:.2f}\n{sig.reason}"
-            )
+            if opened_total > 0:
+                self.alerts.send(
+                    f"{slot.id}: {symbol} {current:.2f} -> {current + opened_total:.2f} lots (έκθεση {sig.exposure:.2f}x) "
+                    f"@ ~{q.ask:.2f}\n{sig.reason}"
+                )
+            if partial:
+                return False, "position only partly increased"
+            if remaining >= spec.volume_min - 1e-9:
+                self.alerts.send(f"{slot.id}: όριο {self.cfg.limits.max_open_positions} ανοιχτών tickets: η θέση "
+                                 f"έμεινε {current + opened_total:.2f} αντί για {target:.2f} lots.", dedupe_seconds=3600)
         else:
-            to_close = -diff
+            # A target below the broker minimum means flat (a smaller remainder is not tradable).
+            to_close = current if target < spec.volume_min else -diff
             closed_total = 0.0
             # Newest tickets first.
             for pos in sorted(positions, key=lambda p: p.entry_time, reverse=True):
@@ -481,6 +527,7 @@ class BotRunner:
                     lots = pos.volume  # never leave a remainder below the broker minimum
                 full = lots >= pos.volume - 1e-9
                 fill = self._counted(lambda: self.broker.close(pos, "rebalance", None if full else lots))
+                self._resized = True
                 part = Position(**{**pos.__dict__, "volume": fill.volume})
                 fully_closed = fill.volume >= pos.volume - 1e-9
                 self._on_closed(part, fill.price, "rebalance" if target > 0 else "target 0", alert=False,
@@ -530,11 +577,12 @@ class BotRunner:
             self._counted(lambda: self.broker.modify(pos, sl, pos.take_profit))
 
     def _refresh_stops(self, positions: list[Position]) -> None:
-        """The daily floor moves at the day reset: move the backup stops with it."""
+        """Move every exposure position's backup stop to the current floor and sizes
+        (after the day reset, and after any resize). Disabled slots are included."""
         account = self.broker.account()
-        for slot in self.slots:
+        for slot in self.cfg.slots:
             mine = [p for p in positions if p.magic == slot.magic]
-            if not mine or self.strategies[slot.id].name != "mr_ensemble":
+            if not mine or slot.magic not in self.exposure_magics:
                 continue
             symbol = self.cfg.instruments[slot.symbol].broker_symbol
             try:

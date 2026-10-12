@@ -25,12 +25,13 @@ def test_take_profit_with_all_costs():
     res = run_backtest(bars, plan(bars, b0=("long", 90, 120)), cfg())
     (t,) = res.trades
     assert t.entry_price == pytest.approx(101.5)  # open + spread + slippage
-    # Risk budget 1,000 over (11.5 + 1.5 cost buffer) points + 4.0 round-trip commission per lot.
-    assert t.volume == pytest.approx(58.82)
+    # Risk budget 1,000 over the 11.5 points from the fill (spread and slippage already in it)
+    # + 4.0 round-trip commission per lot: the same size the live executor computes.
+    assert t.volume == pytest.approx(64.51)
     assert t.exit_price == 120 and t.reason == "take profit"
-    assert t.gross_pnl == pytest.approx((120 - 101.5) * 58.82)
-    assert t.commission == pytest.approx(2 * 2.0 * 58.82)
-    assert t.swap == pytest.approx(-58.82)  # one night
+    assert t.gross_pnl == pytest.approx((120 - 101.5) * 64.51)
+    assert t.commission == pytest.approx(2 * 2.0 * 64.51)
+    assert t.swap == pytest.approx(-64.51)  # one night
     assert res.equity.iloc[-1] == pytest.approx(100_000 + t.net_pnl)
 
 
@@ -63,9 +64,11 @@ def test_equity_floor_acts_as_hard_stop():
     (t,) = res.trades
     assert t.reason == "daily loss limit"
     lots = t.volume
-    balance_before = 100_000 - 2.0 * lots - 1.0 * lots  # entry commission + one night swap
+    balance_before = 100_000 - 2.0 * lots  # entry commission; the swap stays on the position (as on MT5)
+    swap = -1.0 * lots  # one night
     floor = balance_before - 3_000
-    assert t.exit_price == pytest.approx(101.5 + (floor - balance_before) / lots - 0.5)
+    assert t.exit_price == pytest.approx(101.5 + (floor - balance_before - swap) / lots - 0.5)
+    assert t.swap == pytest.approx(swap) and res.equity.iloc[-1] == pytest.approx(100_000 + t.net_pnl)
     assert any("daily loss" in e for e in res.risk_events)
 
 
