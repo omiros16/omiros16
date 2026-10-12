@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -662,6 +663,7 @@ def _example_raw():
     (lambda r: r["strategies"][0]["params"].update(leverage="1.5"), "leverage must be a number"),
     (lambda r: r["strategies"][0].update(params=[1.5]), "mapping"),
     (lambda r: r["strategies"][0].update(grid={"leverage": 1.5}), "list"),
+    (lambda r: r["risk"].update(max_lots_per_ticket=0.001), "volume_min"),
 ])
 def test_config_mistakes_are_config_errors(mutate, message):
     """run_bot.bat stops only on exit code 2 (ConfigError); anything else restarts the bot forever."""
@@ -706,3 +708,134 @@ def test_dryrun_without_an_enabled_slot_is_a_config_error(tmp_path, capsys):
     path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     assert main(["dryrun", "-c", str(path), "--workdir", str(tmp_path / "w")]) == 2
     assert "no enabled strategy slot" in capsys.readouterr().err
+
+
+def _runtime(raw, tmp_path):
+    raw["runtime"].update(state_dir=str(tmp_path / "s"), log_dir=str(tmp_path / "l"),
+                          kill_switch_file=str(tmp_path / "K"))
+    return raw
+
+
+def test_paper_stops_run_on_the_finest_enabled_timeframe(tmp_path):
+    raw = _runtime(_example_raw(), tmp_path)
+    next(s for s in raw["strategies"] if s["id"] == "us100_sweep")["enabled"] = True  # H4 next to us100_mr D1
+    cfg = parse_config(raw)
+    bars = make_frame([(100, 101, 99, 100)] * 3)
+    feed = ReplayFeed({"US100.cash": bars}, start=1)
+    runner = BotRunner(cfg, feed, _paper(cfg, feed, "US100.cash"), Recorder())
+    assert runner.stop_slot["US100.cash"].id == "us100_sweep"
+
+
+@pytest.mark.parametrize("now, lowered", [(datetime(2024, 1, 2, 12, tzinfo=UTC), False),  # same day as the bar
+                                          (datetime(2024, 1, 3, 0, 1, tzinfo=UTC), True)])
+def test_paper_stop_lowers_the_midnight_estimate_only_for_an_earlier_day(tmp_path, target_registered, now, lowered):
+    bars = make_frame([(100, 101, 99, 100), (100, 101, 90, 95), (95, 96, 94, 95)])
+    cfg = _cfg(tmp_path, {})
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    broker = _paper(cfg, feed)
+    broker.on_bars(SYMBOL, bars.iloc[:1])
+    broker.open(SYMBOL, Side.LONG, 10.0, 95.0, None, 9, "s1")  # at bar 1's open
+    feed.advance()
+    runner = BotRunner(cfg, feed, broker, Recorder(), clock=lambda: now)
+    runner.state["last_balance"] = ["2024-01-01T22:00:00+00:00", 100_000.0]
+    runner._simulate_fills(now)  # bar 1 (low 90) hits the stop at 95: -50
+    assert broker.account().balance == pytest.approx(99_950.0)
+    assert runner.state["last_balance"][1] == pytest.approx(99_950.0 if lowered else 100_000.0)
+
+
+def test_paper_equity_has_the_weekend_swap_at_the_monday_open():
+    spec = InstrumentSpec(SYMBOL, 1.0, 0.01, 100, 0.01)
+    rows = [(100, 101, 99, 100)] * 3
+    bars = pd.DataFrame(rows, columns=["open", "high", "low", "close"], dtype=float,
+                        index=pd.DatetimeIndex(["2024-01-04", "2024-01-05", "2024-01-08"], name="time"))
+    feed = ReplayFeed({SYMBOL: bars}, start=1)
+    b = PaperBroker({SYMBOL: spec}, {SYMBOL: CostModel(spread=0.0, slippage=0.0, swap_long_per_lot=-1.0)}, 10_000,
+                    quote_source=feed.quote)
+    b.on_bars(SYMBOL, bars.iloc[:1])
+    b.open(SYMBOL, Side.LONG, 1.0, 50.0, None, 7, "t")  # Friday open
+    feed.advance()  # Monday open: three rollovers passed (as on MT5)
+    b.on_bars(SYMBOL, bars.iloc[:2])
+    assert b.account().equity == pytest.approx(10_000 - 3.0)
+    feed.advance()
+    b.on_bars(SYMBOL, bars)  # Monday's bar closes: no rollover charged twice
+    assert b.account().equity == pytest.approx(10_000 - 3.0)
+
+
+def test_paper_state_from_the_old_swap_bookkeeping_is_migrated(tmp_path):
+    path = tmp_path / "paper.json"
+    path.write_text(json.dumps({  # version 1: the swap was in the balance and on the position
+        "balance": 99_000.0, "next_ticket": 2, "last_bar": {}, "last_close": {},
+        "positions": [{"symbol": SYMBOL, "side": 1, "volume": 10.0, "entry_price": 100.0,
+                       "entry_time": "2024-01-02T00:00:00", "stop_loss": None, "take_profit": None, "ticket": 1,
+                       "magic": 7, "comment": "", "swap": -1_000.0, "commission": 0.0}]}))
+    spec = InstrumentSpec(SYMBOL, 1.0, 0.01, 100, 0.01)
+    b = PaperBroker({SYMBOL: spec}, {SYMBOL: CostModel(spread=0.0, slippage=0.0)}, 100_000, path)
+    assert b.balance == pytest.approx(100_000.0)
+    assert b.account().equity == pytest.approx(99_000.0)  # unchanged: the swap is counted once
+    b._save()
+    assert json.loads(path.read_text())["version"] == 2
+    assert PaperBroker({SYMBOL: spec}, {SYMBOL: CostModel()}, 100_000, path).balance == pytest.approx(100_000.0)
+
+
+def test_engine_flattens_a_target_below_the_broker_minimum(target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 6)
+    # 1.2 lots, then 2.5 lots (two lots of 1.2 + 1.3), then 0.5 lots: below volume_min 1.0 means flat.
+    plan = {bars.index[0].isoformat(): 0.0012, bars.index[1].isoformat(): 0.0025, bars.index[2].isoformat(): 0.0005}
+    cfg = BacktestConfig(InstrumentSpec("X", 1.0, 1.0, 1e6, 0.1), CostModel(spread=0, slippage=0),
+                         RiskLimits(max_open_positions=10))
+    res = run_backtest(bars, create_strategy(TargetPlan.name, {"plan": plan}), cfg)
+    assert not res.in_position.iloc[3:].any()
+    assert sorted(t.volume for t in res.trades) == [1.2, 1.3]
+
+
+def test_engine_honours_the_ticket_limit_like_the_executor(target_registered):
+    bars = make_frame([(100, 101, 99, 100)] * 6)
+    plan = {bars.index[i].isoformat(): 0.1 * (i + 1) for i in range(4)}  # a new ticket at every open
+    cfg = BacktestConfig(InstrumentSpec("X", 1.0, 0.01, 1e6, 0.01), CostModel(spread=0, slippage=0),
+                         RiskLimits(max_open_positions=2, max_lots_per_ticket=150))
+    res = run_backtest(bars, create_strategy(TargetPlan.name, {"plan": plan}), cfg)
+    # 100 lots, then +100 in one ticket, then the limit: the rest is refused.
+    assert res.in_position.iloc[-1] and any("ticket limit 2" in s for s in res.skipped)
+    cfg = replace(cfg, limits=RiskLimits(max_open_positions=10, max_lots_per_ticket=60))
+    res = run_backtest(bars, create_strategy(TargetPlan.name, {"plan": plan}), cfg)
+    assert max(t.volume for t in res.trades) <= 60 and not res.skipped
+
+
+def test_engine_closes_intraday_positions_at_the_weekend_window(target_registered):
+    # H4 bars in server time (UTC+2). The Friday 16:00 bar is 14:00-18:00 UTC; the next one opens at
+    # 18:00 UTC, inside the window that starts FRI 16:30 UTC, so the position goes at the 16:00 bar's close.
+    index = pd.date_range("2024-01-11 00:00", "2024-01-12 20:00", freq="4h").append(pd.DatetimeIndex(["2024-01-15"]))
+    bars = pd.DataFrame([(100, 101, 99, 100)] * len(index), columns=["open", "high", "low", "close"], dtype=float,
+                        index=index.rename("time"))
+    plan = {bars.index[0].isoformat(): 0.001}
+    cfg = replace(_bt(close_before_weekend=True), utc_offset_hours=2.0)
+    res = run_backtest(bars, create_strategy(TargetPlan.name, {"plan": plan}), cfg)
+    assert res.trades[0].reason == "weekend close"
+    assert res.trades[0].exit_time == pd.Timestamp("2024-01-12 16:00")
+
+
+def test_default_ticket_limit_fits_exposure_strategies():
+    raw = _example_raw()
+    raw["risk"].pop("max_open_positions")
+    assert parse_config(raw).limits.max_open_positions == 10  # one enabled mr_ensemble slot
+    next(s for s in raw["strategies"] if s["id"] == "us500_mr")["enabled"] = True
+    assert parse_config(raw).limits.max_open_positions == 20
+    raw["risk"]["max_open_positions"] = 3  # set by hand: kept, with a warning
+    cfg = parse_config(raw)
+    assert cfg.limits.max_open_positions == 3 and any("max_open_positions 3 is low" in n for n in cfg.firm_notes)
+
+
+def test_dryrun_refuses_mixed_timeframes_and_starts_at_the_first_decision(tmp_path, capsys):
+    import yaml
+    raw = _example_raw()
+    for s in raw["strategies"]:
+        s["enabled"] = s["id"] in ("us500_mr", "us100_sweep")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    assert main(["dryrun", "-c", str(path), "--workdir", str(tmp_path / "w")]) == 2
+    assert "one timeframe" in capsys.readouterr().err
+    # mr_ensemble warms up on 514 bars: 515 bars give exactly one decision, as in the backtest.
+    short = tmp_path / "short.csv"
+    lines = (ROOT / "data" / "US100_D1_NQ_2019_2026.csv").read_text().splitlines()[:516]
+    short.write_text("\n".join(lines) + "\n")
+    assert main(["dryrun", "-c", EXAMPLE, "--data", f"US100={short}", "--workdir", str(tmp_path / "w2")]) == 0

@@ -133,6 +133,7 @@ def _number(value, where: str, minimum: float | None = None, integer: bool = Fal
     return value
 
 
+TICKETS_PER_EXPOSURE_SLOT = 10
 TOP_LEVEL = {"account", "risk", "instruments", "strategies", "walkforward", "broker", "mt5", "runtime", "alerts"}
 
 
@@ -178,9 +179,13 @@ def parse_config(raw: dict) -> BotConfig:
         _number(spec.digits, f"instruments.{name}.digits", minimum=0, integer=True)
         if spec.volume_min > spec.volume_max:
             raise ConfigError(f"instruments.{name}: volume_min is above volume_max")
+        if limits.max_lots_per_ticket is not None and limits.max_lots_per_ticket < spec.volume_min:
+            raise ConfigError(f"risk.max_lots_per_ticket {limits.max_lots_per_ticket} is below "
+                              f"instruments.{name}.volume_min {spec.volume_min}")
         instruments[name] = Instrument(name, broker_symbol, spec, costs, history_csv)
 
     slots: list[Slot] = []
+    exposure_slots = 0
     for i, s in enumerate(raw.get("strategies") or []):
         slot = _build(Slot, s, f"strategies[{i}]")
         slot.id = str(slot.id)  # state files key slots by id as text
@@ -200,14 +205,26 @@ def parse_config(raw: dict) -> BotConfig:
         if slot.timeframe not in TIMEFRAMES:
             raise ConfigError(f"{slot.id}: timeframe must be one of {TIMEFRAMES}")
         try:
-            create_strategy(slot.strategy, slot.params)
+            strategy = create_strategy(slot.strategy, slot.params)
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"{slot.id}: {exc}") from exc
+        if slot.enabled and strategy.exposure_based:
+            exposure_slots += 1
         slots.append(slot)
     ids = [s.id for s in slots]
     magics = [s.magic for s in slots]
     if len(set(ids)) != len(ids) or len(set(magics)) != len(magics):
         raise ConfigError("strategy ids and magic numbers must be unique")
+    # Exposure strategies add a ticket at every increase (MT5 hedging accounts cannot add to
+    # one): the research saw up to 9 open per slot. The default of 2 is for one-shot trades.
+    wanted = TICKETS_PER_EXPOSURE_SLOT * exposure_slots
+    if wanted and limits.max_open_positions < wanted:
+        firm_cap = PROP_FIRMS[firm_key].max_open_positions
+        if "max_open_positions" not in (raw.get("risk") or {}):
+            limits.max_open_positions = min(wanted, firm_cap or wanted)
+        else:
+            notes.append(f"max_open_positions {limits.max_open_positions} is low for {exposure_slots} exposure-based "
+                         f"slot(s): increases beyond it are refused (use {wanted} or more)")
 
     broker = {"type": "paper", "deviation_points": 20, "filling": "auto", "allow_orders": False,
               **(raw.get("broker") or {})}

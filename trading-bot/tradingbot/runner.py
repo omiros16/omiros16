@@ -87,6 +87,13 @@ def _decode(d: dict) -> Signal:
     )
 
 
+def _bar_day(bar_time, tz: str) -> str:
+    """Trading day of a bar's start. Naive bar times (MT5 server time, CSV dates) are read
+    as UTC, which never puts a bar on an earlier day than the real one."""
+    ts = pd.Timestamp(bar_time)
+    return day_key(ts.tz_localize("UTC") if ts.tzinfo is None else ts, tz)
+
+
 def _floor_step(x: float, step: float) -> float:
     return round(math.floor(x / step + 1e-9) * step, 8)
 
@@ -118,8 +125,8 @@ class BotRunner:
         # Simulated stops/swaps run once per symbol, on its finest timeframe (enabled slots
         # first; a disabled slot's symbol is processed while it still has positions).
         self.stop_slot: dict[str, Slot] = {}
-        for s in sorted(cfg.slots, key=lambda s: (s.enabled, TIMEFRAMES.index(s.timeframe))):
-            self.stop_slot[cfg.instruments[s.symbol].broker_symbol] = s
+        for s in sorted(cfg.slots, key=lambda s: (s.enabled, -TIMEFRAMES.index(s.timeframe))):
+            self.stop_slot[cfg.instruments[s.symbol].broker_symbol] = s  # the last write wins
 
         rt = cfg.runtime
         self.state_path = Path(rt.state_dir) / "bot_state.json"
@@ -199,7 +206,7 @@ class BotRunner:
         # the last poll first: they belong to the day that just ended, before the
         # day reset below moves the stops.
         if self.broker.simulated:
-            self._simulate_fills()
+            self._simulate_fills(now)
 
         # Any error reading the account (e.g. the MT5 terminal switched to another
         # account) aborts the poll before the risk state is touched.
@@ -393,8 +400,9 @@ class BotRunner:
             self._bars_cache[key] = self.feed.bars(*key)
         return self._bars_cache[key]
 
-    def _simulate_fills(self) -> None:
+    def _simulate_fills(self, now: datetime) -> None:
         held = {p.symbol for p in self.broker.positions()}
+        today = day_key(now, self.cfg.limits.day_reset_timezone)
         for symbol, slot in self.stop_slot.items():
             if slot.id not in self.strategies and symbol not in held:
                 continue
@@ -404,12 +412,15 @@ class BotRunner:
                 log.exception("%s: no bars for the paper stops", symbol)
                 continue
             fills = self.broker.on_bars(symbol, bars)
-            for pos, price, reason in fills:
+            for pos, price, reason, _ in fills:
                 self._on_closed(pos, price, reason)
             last = self.state.get("last_balance")
-            if fills and last:
-                # These stops were hit during bars that closed before this poll (on the
-                # previous day): their losses were realised before midnight.
+            if fills and last and all(_bar_day(bar, self.cfg.limits.day_reset_timezone) < today
+                                      for *_, bar in fills):
+                # Stops hit in bars that opened before today were realised before midnight:
+                # the midnight balance already had those losses. A stop in a bar that
+                # opened today may be after midnight, so the last balance seen stays
+                # (the higher, conservative estimate).
                 self.state["last_balance"] = [last[0], self.broker.account().balance]
 
     def _try_pending(self, slot: Slot, now: datetime) -> None:
@@ -489,6 +500,8 @@ class BotRunner:
                 return False, "increase refused: no room above the loss floor"
             cap = _floor_step(min(self.cfg.limits.max_lots_per_ticket or spec.volume_max, spec.volume_max),
                               spec.volume_step)
+            if cap < spec.volume_min - 1e-9:
+                return False, f"max_lots_per_ticket gives {cap} lots, below the broker minimum {spec.volume_min}"
             tickets_left = self.cfg.limits.max_open_positions - len(self._my_positions())
             opened_total, remaining, partial = 0.0, diff, False
             while remaining >= spec.volume_min - 1e-9 and tickets_left > 0:

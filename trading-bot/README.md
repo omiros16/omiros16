@@ -272,7 +272,7 @@ python -m tradingbot walkforward --slot <slot> --data data/US100_D1.csv
 - Οι ώρες των bars στο MT5 είναι **ώρα server** του broker. Το ημερήσιο όριο στο live μετριέται σε ώρα
   `day_reset_timezone` (Europe/Prague για FTMO). Στο backtest χρησιμοποιείται η ημερομηνία του bar και
   το equity στο άνοιγμά του.
-- Το dryrun παίζει μία σειρά bars ανά σύμβολο: δύο slots στο ίδιο σύμβολο με διαφορετικό timeframe
-  δεν γίνεται να τρέξουν μαζί στο dryrun.
+- Το dryrun προχωράει όλα τα σύμβολα ένα bar τη φορά: όλα τα ενεργά slots πρέπει να έχουν το ίδιο
+  timeframe.
 - Το backtest χειρίζεται ένα σύμβολο τη φορά. Στο live τα slots μοιράζονται τα ίδια όρια ρίσκου του λογαριασμού.
 - Το `MetaTrader5` πακέτο υπάρχει μόνο για Windows. Backtest, tests και dryrun τρέχουν παντού.

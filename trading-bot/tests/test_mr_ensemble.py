@@ -118,7 +118,8 @@ def test_engine_close_matches_research_on_random_data():
     lab_ret, _ = simulate(df, night, day, ctx.rf, ctx.costs, ctx.start, close_exec=False)
     strat = create_strategy("mr_ensemble", {"regime_max_autocorr": None, "min_change": 0.0})
     cfg = BacktestConfig(InstrumentSpec("X", 1.0, 0.0001, 1e9, 0.0001), CostModel(0, 0, 0, 0, 0),
-                         RiskLimits(daily_loss_limit_pct=50, max_drawdown_pct=90, risk_per_trade_pct=1))
+                         RiskLimits(daily_loss_limit_pct=50, max_drawdown_pct=90, risk_per_trade_pct=1,
+                                    max_open_positions=10_000))  # min_change 0: a ticket at every resize
     # The strategy warms up for 260 bars; compare from the research start on.
     res = run_backtest(df, strat, cfg)
     eng_ret = res.equity.pct_change().loc[lab_ret.index[1:]]

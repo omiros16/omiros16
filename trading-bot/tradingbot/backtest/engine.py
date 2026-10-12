@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ..models import CostModel, InstrumentSpec, Position, Side, Signal, SignalKind, Trade
-from ..risk import RiskLimits, RiskManager, RiskState, us_friday_holiday
+from ..risk import RiskLimits, RiskManager, RiskState, _floor_to_step, us_friday_holiday
 from ..strategies.base import Strategy
 
 
@@ -264,10 +264,26 @@ class _Sim:
             if not ok:
                 self.skipped.append(f"{t}: increase skipped: {why}")
                 return
+            # Like the executor: tickets of at most max_lots_per_ticket, at most
+            # max_open_positions of them; what does not fit is left out.
+            lim = self.cfg.limits
+            cap = _floor_to_step(min(lim.max_lots_per_ticket or spec.volume_max, spec.volume_max), spec.volume_step)
+            tickets_left = lim.max_open_positions - len(self.lots)
             fill = self.buy_price(bid_open)
+            remaining, added = diff, 0.0
+            while remaining >= spec.volume_min - 1e-9 and tickets_left > 0 and cap >= spec.volume_min - 1e-9:
+                lots = min(cap, _floor_to_step(remaining, spec.volume_step))
+                self.lots.append([fill, lots, t, 0.0])
+                tickets_left -= 1
+                added = round(added + lots, 8)
+                remaining = round(remaining - lots, 8)
+            if remaining >= spec.volume_min - 1e-9:
+                self.skipped.append(f"{t}: ticket limit {lim.max_open_positions}: {remaining:.2f} lots not opened")
+            if added <= 0:
+                return
+            diff = added
             commission = costs.commission_per_lot * diff
             self.balance -= commission
-            self.lots.append([fill, round(diff, 8), t, 0.0])
             if self.pos is None:
                 self.pos = Position(self.symbol, Side.LONG, round(diff, 8), fill, t, commission=commission,
                                     comment=sig.reason)
@@ -278,7 +294,9 @@ class _Sim:
                 pos.volume = round(pos.volume + diff, 8)
                 pos.commission += commission
         else:
-            self.close(t, self.sell_price(bid_open), "rebalance" if target > 0 else "target 0", volume=-diff)
+            # A target below the broker minimum means flat, as in the executor.
+            vol = current if target < spec.volume_min else -diff
+            self.close(t, self.sell_price(bid_open), "rebalance" if target > 0 else "target 0", volume=vol)
         self.risk.register_request()
 
     def close_market(self, t: pd.Timestamp, bid: float, reason: str) -> None:
@@ -399,12 +417,15 @@ def run_backtest(bars: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig, sy
             sim.close_market(t, c[i], event.replace("_", " ") + " limit")
             equity = sim.balance
 
-        # 5) Flat before the weekend if required.
+        # 5) Flat before the weekend if required: before a weekend (or US-holiday Friday)
+        #    date change, or when the next bar opens inside the weekend window (intraday
+        #    bars; the live bot closes from weekend_close_utc).
         if (
             sim.pos is not None
             and cfg.limits.close_before_weekend
             and i + 1 < n
-            and _weekend_ahead(t, idx[i + 1])
+            and (_weekend_ahead(t, idx[i + 1])
+                 or risk.must_close_for_weekend((idx[i + 1] - utc_offset).to_pydatetime()))
         ):
             sim.close_market(t, c[i], "weekend close")
             equity = sim.balance

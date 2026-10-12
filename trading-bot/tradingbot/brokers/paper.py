@@ -23,6 +23,7 @@ from ..models import AccountInfo, CostModel, InstrumentSpec, Position, Side
 from .base import Broker, BrokerError, Fill, Quote
 
 log = logging.getLogger(__name__)
+STATE_VERSION = 2  # 2: swap stays on the position until it closes
 
 
 class PaperBroker(Broker):
@@ -57,6 +58,10 @@ class PaperBroker(Broker):
             return
         raw = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.balance = raw["balance"]
+        if raw.get("version", 1) < STATE_VERSION:
+            # Version 1 also booked each night's swap into the balance: take it out once,
+            # it now stays on the position until the close (equity is unchanged).
+            self.balance -= sum(p["swap"] for p in raw["positions"])
         self.next_ticket = raw["next_ticket"]
         self._last_bar = {k: pd.Timestamp(v) for k, v in raw.get("last_bar", {}).items()}
         self._last_close = raw.get("last_close", {})
@@ -84,6 +89,7 @@ class PaperBroker(Broker):
         if not self.state_path:
             return
         data = {
+            "version": STATE_VERSION,
             "balance": self.balance,
             "next_ticket": self.next_ticket,
             "last_bar": {k: v.isoformat() for k, v in self._last_bar.items()},
@@ -222,13 +228,15 @@ class PaperBroker(Broker):
         pos.swap += swap
         self._swap_day[pos.ticket] = day
 
-    def on_bars(self, symbol: str, bars: pd.DataFrame) -> list[tuple[Position, float, str]]:
-        """Apply swaps and stops/targets for bars closed since the last call."""
+    def on_bars(self, symbol: str, bars: pd.DataFrame) -> list[tuple[Position, float, str, pd.Timestamp]]:
+        """Apply swaps and stops/targets for bars closed since the last call.
+
+        Returns (position, exit price, reason, start time of the bar that hit it)."""
         if bars.empty:
             return []
         last = self._last_bar.get(symbol)
         new = bars if last is None else bars[bars.index > last]
-        closed: list[tuple[Position, float, str]] = []
+        closed: list[tuple[Position, float, str, pd.Timestamp]] = []
         if last is not None:
             cost = self.costs[symbol]
             spacing = _bar_spacing(bars.index)
@@ -243,11 +251,21 @@ class PaperBroker(Broker):
                     hit = _check_exit(pos, bar, spread, slip)
                     if hit:
                         price, reason = hit
-                        closed.append((replace(pos), price, reason))
+                        closed.append((replace(pos), price, reason, t))
                         self._settle(pos, price)
         if last is None or bars.index[-1] > last:  # never move back on a stale window
             self._last_bar[symbol] = bars.index[-1]
             self._last_close[symbol] = float(bars["close"].iloc[-1])
+        # Rollovers since the last closed bar (e.g. the weekend before a Monday poll) are
+        # already on the position at MT5: charge them now so that equity, the day's loss
+        # reference and the stops see them.
+        try:
+            q = self.quote(symbol)
+        except BrokerError:
+            q = None
+        if q is not None and q.time is not None:
+            for pos in [p for p in self._positions.values() if p.symbol == symbol]:
+                self._charge_swap(pos, pd.Timestamp(q.time), q.bid)
         self._save()
         return closed
 

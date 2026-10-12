@@ -498,13 +498,13 @@ def cmd_dryrun(args) -> int:
     enabled = [s for s in cfg.slots if s.enabled]
     if not enabled:
         raise ConfigError("no enabled strategy slot: set enabled: true on the one to replay")
+    if len({s.timeframe for s in enabled}) > 1:
+        # One cursor steps every series by one bar: they must share the bar length.
+        raise ConfigError("dryrun replays slots on one timeframe; enabled: "
+                          + ", ".join(f"{s.id} {s.timeframe}" for s in enabled) + ". Disable the others")
     data: dict[str, pd.DataFrame] = {}
-    timeframes: dict[str, str] = {}
     for slot in enabled:
         inst = cfg.instruments[slot.symbol]
-        if timeframes.setdefault(inst.broker_symbol, slot.timeframe) != slot.timeframe:
-            raise ConfigError(f"dryrun replays one bar series per symbol: {inst.broker_symbol} has slots on "
-                              f"{timeframes[inst.broker_symbol]} and {slot.timeframe}; disable one of them")
         if inst.broker_symbol in data:
             continue
         if slot.symbol in files:
@@ -533,7 +533,8 @@ def cmd_dryrun(args) -> int:
     if unused:
         print(f"note: no enabled slot trades {sorted(unused)}; those files are not used")
     costs = {i.broker_symbol: i.costs for i in cfg.instruments.values()}
-    warmup = max(_strategy(s.strategy, s.params).warmup_bars for s in enabled) + 1
+    # The first poll sees exactly the warm-up bars: the backtest's first decision bar.
+    warmup = max(_strategy(s.strategy, s.params).warmup_bars for s in enabled)
     if warmup >= min(len(d) for d in data.values()):
         raise ConfigError(f"need more than {warmup} bars for the warm-up")
     feed = ReplayFeed(data, start=warmup, costs=costs)

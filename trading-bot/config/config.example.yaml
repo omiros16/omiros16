@@ -18,7 +18,8 @@ risk:
   max_drawdown_pct: 9.5
   drawdown_mode: static            # static (FTMO) | trailing
   max_trade_risk_share_of_daily: 0.5   # ένα trade δεν ρισκάρει πάνω από το 50% του ημερήσιου ορίου (κανόνας E8)
-  max_open_positions: 10            # το mr_ensemble μπορεί να χρησιμοποιεί πολλά tickets
+  max_open_positions: 10            # το mr_ensemble ανοίγει νέο ticket σε κάθε αύξηση (ως 9 στην έρευνα):
+                                    # 10 ανά ενεργό slot του (αν λείπει, μπαίνει αυτόματα)
   max_trades_per_day: 4
   max_requests_per_day: 200        # E8: 2.000/ημέρα, μετράνε και οι αλλαγές SL/TP
   max_lots_per_ticket: null        # E8: 50
