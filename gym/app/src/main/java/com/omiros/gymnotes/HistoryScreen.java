@@ -187,6 +187,11 @@ final class HistoryScreen extends Screen {
                 }
             }
         }
+        Coach.Advice next = db.advice(exerciseId, today + 1);
+        if (next != null) {
+            statRow(h.get(h.size() - 1).day == today ? "Επόμενη φορά" : "Στόχος", Fmt.target(next),
+                    Fmt.arrow(next.kind) + " " + Fmt.kind(next.kind));
+        }
         if (b.bestE1rm > 0) {
             statRow("Ρεκόρ ≈1RM", Fmt.num1(b.bestE1rm) + " kg", Fmt.kg(b.bestE1rmWeight) + " × " + b.bestE1rmReps
                     + "  ·  " + Fmt.day(bestDay, today));
@@ -243,24 +248,34 @@ final class HistoryScreen extends Screen {
     }
 
     private void menu(View anchor) {
-        ui.menu(anchor, new String[]{"Μετονομασία", "Διαγραφή άσκησης", "Πώς μετράνε τα PR"}, new Ui.OnPick() {
+        ui.menu(anchor, new String[]{"Εύρος reps & βήμα κιλών", "Μετονομασία", "Διαγραφή άσκησης", "Πώς βγαίνει ο στόχος",
+                "Πώς μετράνε τα PR"}, new Ui.OnPick() {
             @Override
             public void run(int which) {
                 if (exercise == null) return;
                 if (which == 0) {
-                    renameExercise(exercise, new Runnable() {
+                    progressSettings(exerciseId, new Runnable() {
                         @Override
                         public void run() {
                             refresh();
                         }
                     });
                 } else if (which == 1) {
+                    renameExercise(exercise, new Runnable() {
+                        @Override
+                        public void run() {
+                            refresh();
+                        }
+                    });
+                } else if (which == 2) {
                     deleteExercise(exercise, new Runnable() {
                         @Override
                         public void run() {
                             act.pop();
                         }
                     });
+                } else if (which == 3) {
+                    explainCoach(ui);
                 } else {
                     ExerciseScreen.explainPrs(ui);
                 }
@@ -316,7 +331,8 @@ final class HistoryScreen extends Screen {
             Session s = sessions.get(position);
             h.date.setText(Fmt.day(s.day, Fmt.today()));
             double e = s.bestE1rm();
-            h.score.setText(e > 0 ? "≈1RM " + Fmt.num1(e) + " kg" : "max " + s.maxReps() + " reps");
+            h.score.setText((e > 0 ? "≈1RM " + Fmt.num1(e) + " kg" : "max " + s.maxReps() + " reps")
+                    + (s.effort > 0 ? "  ·  " + Fmt.effort(s.effort) : ""));
             h.sets.setText(Fmt.sets(s));
             h.pr.setText("🏆 " + Fmt.badges(s.flags));
             h.pr.setVisibility(s.flags != 0 ? View.VISIBLE : View.GONE);

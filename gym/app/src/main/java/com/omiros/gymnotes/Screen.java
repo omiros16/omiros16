@@ -2,8 +2,10 @@ package com.omiros.gymnotes;
 
 import static com.omiros.gymnotes.Theme.*;
 
+import android.content.DialogInterface;
 import android.text.TextUtils;
 import android.view.View;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -136,6 +138,106 @@ abstract class Screen {
                 after.run();
             }
         });
+    }
+
+    /** Rep range and weight step of an exercise (each automatic unless chosen). */
+    void progressSettings(final long exerciseId, final Runnable after) {
+        Coach.Settings current = db.settings(exerciseId);
+        Coach.Settings baseline = db.coachSettings(exerciseId);
+        baseline.low = 0;
+        baseline.high = 0;
+        baseline.step = 0;   // show what "automatic" would pick
+        Coach.Advice auto = Coach.next(db.recent(exerciseId, Fmt.today() + 1, Coach.RECENT), baseline, Fmt.today());
+        String autoRange = auto == null ? "" : " (" + Coach.rangeLabel(auto.low, auto.high) + ")";
+        String autoStep = auto == null ? "" : " (" + Fmt.kg(auto.step) + ")";
+
+        final int[] range = {0};
+        for (int i = 0; i < Coach.RANGES.length; i++) {
+            if (Coach.RANGES[i][0] == current.low && Coach.RANGES[i][1] == current.high) range[0] = i + 1;
+        }
+        final int[] step = {0};
+        for (int i = 0; i < Coach.STEPS.length; i++) {
+            if (Strength.centi(Coach.STEPS[i]) == Strength.centi(current.step)) step[0] = i + 1;
+        }
+
+        LinearLayout box = ui.column();
+        box.setPadding(ui.dp(20), ui.dp(4), ui.dp(20), 0);
+        box.addView(ui.label("Εύρος reps"));
+        String[] ranges = new String[Coach.RANGES.length + 1];
+        ranges[0] = "Αυτόματο" + autoRange;
+        for (int i = 0; i < Coach.RANGES.length; i++) ranges[i + 1] = Coach.rangeLabel(Coach.RANGES[i][0], Coach.RANGES[i][1]);
+        box.addView(pills(ranges, range));
+        TextView rangeHint = ui.text("Ανεβαίνεις κιλά όταν πιάσεις το πάνω όριο σε όλα τα sets.", 13, DIM, false);
+        rangeHint.setPadding(ui.dp(4), ui.dp(6), 0, 0);
+        box.addView(rangeHint);
+        box.addView(ui.label("Βήμα κιλών"));
+        String[] steps = new String[Coach.STEPS.length + 1];
+        steps[0] = "Αυτόματο" + autoStep;
+        for (int i = 0; i < Coach.STEPS.length; i++) steps[i + 1] = Fmt.kg(Coach.STEPS[i]) + " kg";
+        box.addView(pills(steps, step));
+        TextView stepHint = ui.text("Η μικρότερη αύξηση που έχει το μηχάνημα ή οι αλτήρες. Το αυτόματο τη βρίσκει "
+                + "από τα κιλά που έχεις γράψει.", 13, DIM, false);
+        stepHint.setPadding(ui.dp(4), ui.dp(6), 0, 0);
+        box.addView(stepHint);
+
+        ui.show(ui.dialog().setTitle("Πρόοδος άσκησης").setView(box).setNegativeButton("Άκυρο", null)
+                .setPositiveButton("Αποθήκευση", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        int low = range[0] == 0 ? 0 : Coach.RANGES[range[0] - 1][0];
+                        int high = range[0] == 0 ? 0 : Coach.RANGES[range[0] - 1][1];
+                        double st = step[0] == 0 ? 0 : Coach.STEPS[step[0] - 1];
+                        db.setSettings(exerciseId, low, high, st);
+                        after.run();
+                    }
+                }), false);
+    }
+
+    /** A scrolling row of pills; {@code selected[0]} follows the tapped one. */
+    private View pills(String[] labels, final int[] selected) {
+        final LinearLayout row = ui.row();
+        final TextView[] views = new TextView[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            views[i] = ui.pill(labels[i]);
+            views[i].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    selected[0] = index;
+                    for (int k = 0; k < views.length; k++) ui.stylePill(views[k], k == index);
+                }
+            });
+            ui.stylePill(views[i], i == selected[0]);
+            LinearLayout.LayoutParams lp = Ui.wrap();
+            lp.rightMargin = ui.dp(6);
+            row.addView(views[i], lp);
+        }
+        HorizontalScrollView h = new HorizontalScrollView(act);
+        h.setHorizontalScrollBarEnabled(false);
+        h.addView(row);
+        return h;
+    }
+
+    static void explainCoach(Ui ui) {
+        ui.info("Πώς βγαίνει ο στόχος",
+                "Ο στόχος βγαίνει από τις τελευταίες σου καταγραφές της άσκησης, από όποιο πρόγραμμα κι αν "
+                        + "τις έγραψες.\n\n"
+                        + "• Μένεις στα ίδια κιλά και ανεβάζεις reps. Όταν πιάσεις το πάνω όριο του εύρους σου "
+                        + "σε όλα τα sets, ανεβαίνεις ένα βήμα κιλών (η μικρότερη αύξηση που χρησιμοποιείς).\n\n"
+                        + "• Κάθε προπόνηση συγκρίνεται με τις συνηθισμένες σου. Μετά από κακή μέρα δεν σου λέει να "
+                        + "κατέβεις: ξαναδοκιμάζεις τον ίδιο στόχο. Μετά από πολύ καλή μέρα ανεβαίνεις μόνο ένα "
+                        + "βήμα, όχι άλμα.\n\n"
+                        + "• " + Coach.STALL_SESSIONS + " φορές στα ίδια κιλά χωρίς πρόοδο: κατεβαίνεις ~10% και "
+                        + "ξαναχτίζεις. Μετά από " + Coach.LONG_BREAK_DAYS + "+ μέρες διάλειμμα ξεκινάς ~10% πιο "
+                        + "ελαφριά, μετά από " + Coach.BREAK_DAYS + "+ κάνεις πρώτα ξανά τα ίδια.\n\n"
+                        + "• Αν τα reps πέσουν πολύ κάτω από το εύρος σου (π.χ. ανέβηκες μόνος σου πολλά κιλά), "
+                        + "σου λέει το βάρος που σε ξαναφέρνει μέσα στο εύρος.\n\n"
+                        + "• Αν πατήσεις «Πώς ήταν;» μετά την άσκηση: «Εύκολο» ανεβάζει πιο γρήγορα, «Στο όριο» "
+                        + "πιο αργά. Είναι προαιρετικό.\n\n"
+                        + "• Ποτέ πάνω από +" + Math.round(Coach.MAX_JUMP * 100) + "% σε μία φορά. Αν το επόμενο "
+                        + "βάρος είναι μεγάλο άλμα (π.χ. ελαφριοί αλτήρες), κάνεις πρώτα λίγα reps παραπάνω.\n\n"
+                        + "Το εύρος reps και το βήμα κιλών βγαίνουν αυτόματα από τα δεδομένα σου· μπορείς να τα "
+                        + "αλλάξεις από την κάρτα του στόχου.");
     }
 
     void setTitle(String title, String subtitle) {

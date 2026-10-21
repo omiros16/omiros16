@@ -27,10 +27,12 @@ import java.util.Map;
  * Export / import of all data as one readable JSON file:
  * <pre>
  * {"app": "gymnotes", "format": 1, "exported": "2026-10-01",
- *  "exercises": [{"name": "Lat pulldown", "log": [{"date": "2026-09-26", "sets": [[50, 10], [50, 9]]}]}],
+ *  "exercises": [{"name": "Lat pulldown", "reps": [8, 12], "step": 2.5,
+ *                 "log": [{"date": "2026-09-26", "effort": 2, "sets": [[50, 10], [50, 9]]}]}],
  *  "presets": [{"name": "Δευτέρα", "exercises": ["Lat pulldown"]}]}
  * </pre>
- * Both directions stream, so memory stays small however long the history is.
+ * "reps" / "step" (progression settings) and "effort" (1 easy, 2 normal, 3 at the limit) are
+ * optional. Both directions stream, so memory stays small however long the history is.
  */
 final class Backup {
     static final String APP = "gymnotes";
@@ -45,6 +47,9 @@ final class Backup {
 
     static final class Ex {
         String name;
+        int low;
+        int high;
+        double step;
         final List<Session> log = new ArrayList<>();
     }
 
@@ -74,13 +79,19 @@ final class Backup {
         w.name("exported").value(LocalDate.now().toString());
 
         w.name("exercises").beginArray();
-        // Both cursors are ordered by exercise id: walk them side by side in one pass.
-        try (Cursor ex = db.exportExercises(); Cursor sets = db.exportSets()) {
+        // The cursors are all ordered by exercise id (then day): walk them side by side in one pass.
+        try (Cursor ex = db.exportExercises(); Cursor sets = db.exportSets(); Cursor notes = db.exportNotes()) {
             boolean more = sets.moveToFirst();
+            boolean moreNotes = notes.moveToFirst();
             while (ex.moveToNext()) {
                 long id = ex.getLong(0);
                 w.beginObject();
                 w.name("name").value(ex.getString(1));
+                if (ex.getInt(2) > 0) w.name("reps").beginArray().value(ex.getInt(2)).value(ex.getInt(3)).endArray();
+                if (ex.getDouble(4) > 0) {
+                    w.name("step");
+                    writeKg(w, ex.getDouble(4));
+                }
                 w.name("log").beginArray();
                 while (more && sets.getLong(0) < id) more = sets.moveToNext();
                 long day = Long.MIN_VALUE;
@@ -92,6 +103,12 @@ final class Backup {
                         sessions++;
                         w.beginObject();
                         w.name("date").value(LocalDate.ofEpochDay(d).toString());
+                        while (moreNotes && (notes.getLong(0) < id || (notes.getLong(0) == id && notes.getLong(1) < d))) {
+                            moreNotes = notes.moveToNext();
+                        }
+                        if (moreNotes && notes.getLong(0) == id && notes.getLong(1) == d) {
+                            w.name("effort").value(notes.getInt(2));
+                        }
                         w.name("sets").beginArray();
                     }
                     w.beginArray();
@@ -195,12 +212,31 @@ final class Backup {
             return;
         }
         String name = null;
+        int low = 0;
+        int high = 0;
+        double step = 0;
         List<Session> log = new ArrayList<>();
         r.beginObject();
         while (r.hasNext()) {
             String field = r.nextName();
             if (field.equals("name") && r.peek() == JsonToken.STRING) {
                 name = Db.clean(r.nextString());
+            } else if (field.equals("reps") && r.peek() == JsonToken.BEGIN_ARRAY) {
+                int[] range = new int[2];
+                int i = 0;
+                r.beginArray();
+                while (r.hasNext()) {
+                    if (r.peek() == JsonToken.NUMBER && i < 2) range[i++] = (int) r.nextDouble();
+                    else r.skipValue();
+                }
+                r.endArray();
+                if (i == 2 && range[0] >= 1 && range[1] >= range[0] && range[1] <= 100) {
+                    low = range[0];
+                    high = range[1];
+                }
+            } else if (field.equals("step") && r.peek() == JsonToken.NUMBER) {
+                double v = r.nextDouble();
+                if (v > 0 && v <= 50) step = v;
             } else if (field.equals("log") && r.peek() == JsonToken.BEGIN_ARRAY) {
                 r.beginArray();
                 while (r.hasNext()) {
@@ -218,6 +254,9 @@ final class Backup {
         if (!exercises.containsKey(key)) {
             Ex ex = new Ex();
             ex.name = name;
+            ex.low = low;
+            ex.high = high;
+            ex.step = step;
             exercises.put(key, ex);
             days.put(key, new HashMap<Long, Session>());
         }
@@ -232,11 +271,15 @@ final class Backup {
             return null;
         }
         Long day = null;
+        int effort = 0;
         Session s = new Session(0);
         r.beginObject();
         while (r.hasNext()) {
             String field = r.nextName();
-            if (field.equals("date") && r.peek() == JsonToken.STRING) {
+            if (field.equals("effort") && r.peek() == JsonToken.NUMBER) {
+                double v = r.nextDouble();
+                effort = v >= Coach.EASY && v <= Coach.HARD ? (int) v : 0;
+            } else if (field.equals("date") && r.peek() == JsonToken.STRING) {
                 try {
                     day = LocalDate.parse(r.nextString().trim()).toEpochDay();
                 } catch (DateTimeParseException e) {
@@ -254,6 +297,7 @@ final class Backup {
         if (day == null || s.n == 0) return null;
         Session out = new Session(day);
         for (int i = 0; i < s.n; i++) out.add(s.weight[i], s.reps[i]);
+        out.effort = effort;
         return out;
     }
 

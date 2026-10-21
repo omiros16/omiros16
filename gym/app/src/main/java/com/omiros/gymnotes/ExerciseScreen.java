@@ -27,13 +27,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Logging one exercise on one day. Rows start as a copy of last time's sets; tap ✓ on each set
- * when it is done and it is saved at once (later edits to a ticked set save too). Every ticked
- * set is judged against the whole history for real PRs, see {@link Strength}.
+ * Logging one exercise on one day. Rows start with the day's target ({@link Coach}: last time's
+ * warm-ups, then the suggested work sets); tap ✓ on each set when it is done and it is saved at
+ * once (later edits to a ticked set save too). Every ticked set is judged against the whole history
+ * for real PRs, see {@link Strength}. Once every set is ticked, the target for next time is shown.
  */
 final class ExerciseScreen extends Screen {
-    private static final double WEIGHT_STEP = 2.5;
     private static final int SAVE_DELAY_MS = 500;
+    private static final String[] EFFORTS = {"Εύκολο", "Κανονικό", "Στο όριο"};
 
     private final long exerciseId;
     private long day;
@@ -42,6 +43,7 @@ final class ExerciseScreen extends Screen {
     private final List<Row> rows = new ArrayList<>();
     private boolean pendingSave;
     private boolean propagating;
+    private double weightStep = 2.5;
 
     private ScrollView scroll;
     private TextView dateChip;
@@ -51,6 +53,10 @@ final class ExerciseScreen extends Screen {
     private TextView banner;
     private LinearLayout rowsBox;
     private TextView summary;
+    private AdviceView adviceView;
+    private AdviceView nextView;
+    private LinearLayout effortRow;
+    private final TextView[] effortChips = new TextView[3];
 
     private final Runnable saveTask = new Runnable() {
         @Override
@@ -68,6 +74,53 @@ final class ExerciseScreen extends Screen {
         ImageView check;
         boolean done;
         int flags;
+    }
+
+    /** A card with a {@link Coach.Advice}: what, why, and the range / step it used. */
+    private final class AdviceView {
+        final LinearLayout card;
+        final TextView title;
+        final TextView target;
+        final TextView reason;
+        final TextView meta;
+
+        AdviceView() {
+            card = ui.column();
+            card.setBackground(ui.outline(ACCENT_BG, 0x665B9DFF, 16));
+            card.setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12));
+            title = ui.text(13, ACCENT_SOFT, true);
+            target = ui.text(21, TEXT, true);
+            target.setFontFeatureSettings("tnum");
+            target.setPadding(0, ui.dp(4), 0, 0);
+            reason = ui.text(14, SOFT, false);
+            reason.setLineSpacing(0, 1.12f);
+            reason.setPadding(0, ui.dp(6), 0, 0);
+            meta = ui.text(12, ACCENT_SOFT, false);
+            meta.setPadding(0, ui.dp(10), 0, ui.dp(2));
+            meta.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    changeSettings();
+                }
+            });
+            card.addView(title);
+            card.addView(target);
+            card.addView(reason);
+            card.addView(meta);
+        }
+
+        void show(Coach.Advice a, String when) {
+            if (a == null) {
+                card.setVisibility(View.GONE);
+                return;
+            }
+            card.setVisibility(View.VISIBLE);
+            title.setText(when + "  ·  " + Fmt.arrow(a.kind) + " " + Fmt.kind(a.kind));
+            target.setText(Fmt.target(a));
+            reason.setText(a.reason);
+            meta.setText("Εύρος " + Coach.rangeLabel(a.low, a.high) + " reps" + (a.autoRange ? " (αυτόματο)" : "")
+                    + "  ·  βήμα " + Fmt.kg(a.step) + " kg" + (a.autoStep ? " (αυτόματο)" : "") + "  ·  αλλαγή ›");
+        }
     }
 
     ExerciseScreen(MainActivity act, long exerciseId, long day) {
@@ -110,6 +163,9 @@ final class ExerciseScreen extends Screen {
         });
         dateRow.addView(dateChip, Ui.wrap());
         col.addView(dateRow);
+
+        adviceView = new AdviceView();
+        col.addView(adviceView.card, ui.spaced(12));
 
         LinearLayout info = ui.column();
         info.setBackground(ui.round(CARD, 16));
@@ -160,6 +216,28 @@ final class ExerciseScreen extends Screen {
         });
         col.addView(addSet, ui.spaced(10));
 
+        effortRow = ui.column();
+        effortRow.addView(ui.text("Πώς ήταν; (προαιρετικό, βοηθάει τον στόχο)", 13, DIM, true));
+        LinearLayout chips = ui.row();
+        for (int i = 0; i < 3; i++) {
+            final int effort = i + 1;
+            effortChips[i] = ui.pill(EFFORTS[i]);
+            effortChips[i].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    rate(effort);
+                }
+            });
+            LinearLayout.LayoutParams lp = Ui.fill();
+            if (i < 2) lp.rightMargin = ui.dp(8);
+            chips.addView(effortChips[i], lp);
+        }
+        effortRow.addView(chips, ui.spaced(8));
+        col.addView(effortRow, ui.spaced(18));
+
+        nextView = new AdviceView();
+        col.addView(nextView.card, ui.spaced(14));
+
         summary = ui.text(14, SOFT, false);
         summary.setPadding(ui.dp(4), ui.dp(14), ui.dp(4), 0);
         summary.setLineSpacing(0, 1.15f);
@@ -174,6 +252,15 @@ final class ExerciseScreen extends Screen {
             }
         });
         col.addView(how, Ui.wrap());
+        TextView coach = ui.text("ⓘ  Πώς βγαίνει ο στόχος", 14, ACCENT_SOFT, true);
+        coach.setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(8));
+        coach.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                explainCoach(ui);
+            }
+        });
+        col.addView(coach, Ui.wrap());
         return root;
     }
 
@@ -241,16 +328,83 @@ final class ExerciseScreen extends Screen {
             }
         }
 
+        Coach.Advice advice = showAdvice();
+
+        // The plan for the day: last time's warm-ups, then the suggested work sets.
+        List<String[]> plan = new ArrayList<>();
+        if (prev != null) {
+            double top = Coach.work(prev).top;
+            for (int i = 0; i < prev.n && Coach.isWarmUp(prev.weight[i], top); i++) {
+                plan.add(new String[]{Fmt.kg(prev.weight[i]), String.valueOf(prev.reps[i])});
+            }
+        }
+        if (advice != null) {
+            for (int r : advice.reps) plan.add(new String[]{Fmt.kg(advice.weight), String.valueOf(r)});
+        }
         propagating = true;
         rows.clear();
         rowsBox.removeAllViews();
         for (int i = 0; i < cur.n; i++) addRow(Fmt.kg(cur.weight[i]), String.valueOf(cur.reps[i]), true);
-        if (prev != null) {
-            for (int i = cur.n; i < prev.n; i++) addRow(Fmt.kg(prev.weight[i]), String.valueOf(prev.reps[i]), false);
-        }
+        for (int i = cur.n; i < plan.size(); i++) addRow(plan.get(i)[0], plan.get(i)[1], false);
         if (rows.isEmpty()) addRow("", "", false);
         propagating = false;
         judge(null);
+    }
+
+    /** The target for this day, from the sessions before it; also sets the −/+ weight step. */
+    private Coach.Advice showAdvice() {
+        Coach.Advice advice = db.advice(exerciseId, day);
+        Coach.Settings settings = db.settings(exerciseId);
+        weightStep = advice != null ? advice.step : settings.step > 0 ? settings.step : 2.5;
+        adviceView.show(advice, day == Fmt.today() ? "Στόχος σήμερα" : "Στόχος γι' αυτή τη μέρα");
+        return advice;
+    }
+
+    private void changeSettings() {
+        progressSettings(exerciseId, new Runnable() {
+            @Override
+            public void run() {
+                boolean started = false;
+                for (Row r : rows) started |= r.done;
+                if (started) {
+                    showAdvice();
+                    judge(null);
+                } else {
+                    load();
+                }
+            }
+        });
+    }
+
+    private void rate(int effort) {
+        int now = db.effort(exerciseId, day) == effort ? 0 : effort;
+        db.setEffort(exerciseId, day, now);
+        judge(null);
+    }
+
+    /**
+     * Effort chips once something is ticked; next time's target once every set is ticked, scrolled
+     * into view when a tick just finished the exercise.
+     */
+    private void showOutcome(int done, boolean finished, boolean ticked) {
+        boolean wasShown = nextView.card.getVisibility() == View.VISIBLE;
+        effortRow.setVisibility(done > 0 ? View.VISIBLE : View.GONE);
+        int effort = done > 0 ? db.effort(exerciseId, day) : 0;
+        for (int i = 0; i < 3; i++) ui.stylePill(effortChips[i], effort == i + 1);
+        Coach.Advice next = null;
+        if (done > 0 && finished) {
+            next = Coach.next(db.recent(exerciseId, day + 1, Coach.RECENT), db.coachSettings(exerciseId), day);
+        }
+        nextView.show(next, "Επόμενη φορά");
+        if (next != null && !wasShown && ticked) {
+            scroll.post(new Runnable() {
+                @Override
+                public void run() {
+                    int bottom = nextView.card.getBottom() + ui.dp(12) - scroll.getHeight();
+                    if (bottom > scroll.getScrollY()) scroll.smoothScrollTo(0, bottom);
+                }
+            });
+        }
     }
 
     // ---------------------------------------------------------------- rows
@@ -379,7 +533,7 @@ final class ExerciseScreen extends Screen {
     private void step(EditText field, boolean decimal, int dir) {
         String t = field.getText().toString();
         if (decimal) {
-            field.setText(Fmt.kg(Math.max(0, Fmt.parseKg(t) + dir * WEIGHT_STEP)));
+            field.setText(Fmt.kg(Math.max(0, Fmt.parseKg(t) + dir * weightStep)));
         } else {
             field.setText(String.valueOf(Math.max(0, Fmt.parseReps(t) + dir)));
         }
@@ -484,6 +638,9 @@ final class ExerciseScreen extends Screen {
         } else {
             banner.setVisibility(View.GONE);
         }
+        boolean finished = true;
+        for (Row r : rows) finished &= r.done;
+        showOutcome(today.n, finished, trigger != null && trigger.done);
         summary.setText(today.n == 0
                 ? "Πάτα ✓ σε κάθε set μόλις το τελειώσεις· αποθηκεύεται αμέσως και φαίνεται σε όλα τα "
                 + "προγράμματα με αυτή την άσκηση."

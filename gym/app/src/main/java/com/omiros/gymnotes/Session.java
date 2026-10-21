@@ -10,6 +10,8 @@ final class Session {
     int[] reps = new int[6];
     /** {@link Strength} PR flags of the whole session, filled by {@link Strength#markPrs}. */
     int flags;
+    /** How hard it felt ({@link Coach#EASY}, {@link Coach#NORMAL}, {@link Coach#HARD}), 0 if not rated. */
+    int effort;
 
     Session(long day) {
         this.day = day;

@@ -90,6 +90,43 @@ final class Fmt {
         return sb.toString();
     }
 
+    /** "52.5 kg × 10, 10, 9" */
+    static String target(Coach.Advice a) {
+        StringBuilder sb = new StringBuilder(load(a.weight)).append(" × ");
+        for (int i = 0; i < a.reps.length; i++) sb.append(i == 0 ? "" : ", ").append(a.reps[i]);
+        return sb.toString();
+    }
+
+    static String arrow(int kind) {
+        switch (kind) {
+            case Coach.UP:
+                return "↑";
+            case Coach.DOWN:
+                return "↓";
+            case Coach.SAME:
+                return "=";
+            default:
+                return "+";
+        }
+    }
+
+    static String kind(int kind) {
+        switch (kind) {
+            case Coach.UP:
+                return "ανεβαίνεις κιλά";
+            case Coach.DOWN:
+                return "πιο ελαφριά";
+            case Coach.SAME:
+                return "ξανά ο ίδιος στόχος";
+            default:
+                return "περισσότερα reps";
+        }
+    }
+
+    static String effort(int e) {
+        return e == Coach.EASY ? "εύκολο" : e == Coach.NORMAL ? "κανονικό" : e == Coach.HARD ? "στο όριο" : "";
+    }
+
     /** Short badge text, e.g. "PR βάρους · PR 1RM". */
     static String badges(int flags) {
         StringBuilder sb = new StringBuilder();

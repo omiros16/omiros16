@@ -157,6 +157,15 @@ final class PresetScreen extends Screen {
             card.addView(pr);
         }
 
+        // Done today: what to do next time; otherwise: today's target.
+        Coach.Advice advice = db.advice(e.id, e.lastDay == today ? today + 1 : today);
+        if (advice != null) {
+            TextView next = ui.text(Fmt.arrow(advice.kind) + "  " + (e.lastDay == today ? "Επόμενη φορά: " : "Στόχος: ")
+                    + Fmt.target(advice), 14, ACCENT_SOFT, true);
+            next.setPadding(0, ui.dp(8), ui.dp(10), 0);
+            card.addView(next);
+        }
+
         card.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

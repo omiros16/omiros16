@@ -53,7 +53,7 @@ final class Db extends SQLiteOpenHelper {
             "e.id, e.name, e.last_day, e.sessions, e.best_e1rm, e.max_weight, e.last_pr";
 
     Db(Context context) {
-        super(context, "gym.db", null, 1);
+        super(context, "gym.db", null, 2);
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -66,7 +66,10 @@ final class Db extends SQLiteOpenHelper {
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE exercise (id INTEGER PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL UNIQUE,"
                 + " last_day INTEGER, sessions INTEGER NOT NULL DEFAULT 0, best_e1rm REAL NOT NULL DEFAULT 0,"
-                + " max_weight REAL NOT NULL DEFAULT 0, last_pr INTEGER NOT NULL DEFAULT 0)");
+                + " max_weight REAL NOT NULL DEFAULT 0, last_pr INTEGER NOT NULL DEFAULT 0,"
+                + " rep_low INTEGER NOT NULL DEFAULT 0, rep_high INTEGER NOT NULL DEFAULT 0, step REAL NOT NULL DEFAULT 0,"
+                + " auto_low INTEGER NOT NULL DEFAULT 0, auto_high INTEGER NOT NULL DEFAULT 0,"
+                + " auto_step REAL NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE preset (id INTEGER PRIMARY KEY, name TEXT NOT NULL, pos INTEGER NOT NULL)");
         db.execSQL("CREATE TABLE preset_item ("
                 + " preset_id INTEGER NOT NULL REFERENCES preset(id) ON DELETE CASCADE,"
@@ -77,10 +80,35 @@ final class Db extends SQLiteOpenHelper {
                 + " exercise_id INTEGER NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,"
                 + " day INTEGER NOT NULL, idx INTEGER NOT NULL, weight REAL NOT NULL, reps INTEGER NOT NULL,"
                 + " PRIMARY KEY (exercise_id, day, idx)) WITHOUT ROWID");
+        createNotes(db);
     }
 
+    /**
+     * Version 2: per-exercise progression settings (0 = automatic), the automatic choices cached
+     * like the other stats, and the optional effort rating.
+     */
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE exercise ADD COLUMN rep_low INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE exercise ADD COLUMN rep_high INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE exercise ADD COLUMN step REAL NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE exercise ADD COLUMN auto_low INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE exercise ADD COLUMN auto_high INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE exercise ADD COLUMN auto_step REAL NOT NULL DEFAULT 0");
+            createNotes(db);
+            List<Long> ids = new ArrayList<>();
+            try (Cursor c = db.rawQuery("SELECT id FROM exercise", null)) {
+                while (c.moveToNext()) ids.add(c.getLong(0));
+            }
+            for (long id : ids) refreshStats(db, id);
+        }
+    }
+
+    private static void createNotes(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE log_note ("
+                + " exercise_id INTEGER NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,"
+                + " day INTEGER NOT NULL, effort INTEGER NOT NULL, PRIMARY KEY (exercise_id, day)) WITHOUT ROWID");
     }
 
     private SQLiteDatabase rd() {
@@ -396,9 +424,132 @@ final class Db extends SQLiteOpenHelper {
         return b;
     }
 
-    /** Every session of an exercise, oldest first. */
+    /** Every session of an exercise, oldest first, with its effort rating. */
     List<Session> history(long exerciseId) {
-        return history(rd(), exerciseId);
+        List<Session> h = history(rd(), exerciseId);
+        attachEfforts(exerciseId, h);
+        return h;
+    }
+
+    /** The last {@code limit} sessions before {@code beforeDay}, oldest first, with effort ratings. */
+    List<Session> recent(long exerciseId, long beforeDay, int limit) {
+        List<Session> out = new ArrayList<>();
+        long from;
+        try (Cursor c = rd().rawQuery("SELECT DISTINCT day FROM log_set WHERE exercise_id = ? AND day < ?"
+                + " ORDER BY day DESC LIMIT " + limit, args(exerciseId, beforeDay))) {
+            if (!c.moveToLast()) return out;
+            from = c.getLong(0);
+        }
+        Session cur = null;
+        try (Cursor c = rd().rawQuery("SELECT day, weight, reps FROM log_set WHERE exercise_id = ? AND day >= ?"
+                + " AND day < ? ORDER BY day, idx", args(exerciseId, from, beforeDay))) {
+            while (c.moveToNext()) {
+                long day = c.getLong(0);
+                if (cur == null || cur.day != day) {
+                    cur = new Session(day);
+                    out.add(cur);
+                }
+                cur.add(c.getDouble(1), c.getInt(2));
+            }
+        }
+        attachEfforts(exerciseId, out);
+        return out;
+    }
+
+    private void attachEfforts(long exerciseId, List<Session> sessions) {
+        if (sessions.isEmpty()) return;
+        Map<Long, Integer> efforts = new HashMap<>();
+        try (Cursor c = rd().rawQuery("SELECT day, effort FROM log_note WHERE exercise_id = ? AND day BETWEEN ? AND ?",
+                args(exerciseId, sessions.get(0).day, sessions.get(sessions.size() - 1).day))) {
+            while (c.moveToNext()) efforts.put(c.getLong(0), c.getInt(1));
+        }
+        for (Session s : sessions) {
+            Integer e = efforts.get(s.day);
+            s.effort = e == null ? 0 : e;
+        }
+    }
+
+    /** Advice for a session of this exercise on {@code day}, from the sessions before it (null without any). */
+    Coach.Advice advice(long exerciseId, long day) {
+        return Coach.next(recent(exerciseId, day, Coach.RECENT), coachSettings(exerciseId), day);
+    }
+
+    /** The exercise's settings plus the cached automatic choices (see {@link #refreshStats}). */
+    Coach.Settings coachSettings(long exerciseId) {
+        Coach.Settings s = new Coach.Settings();
+        try (Cursor c = rd().rawQuery("SELECT rep_low, rep_high, step, auto_low, auto_high, auto_step FROM exercise"
+                + " WHERE id = ?", args(exerciseId))) {
+            if (c.moveToFirst()) {
+                s.low = c.getInt(0);
+                s.high = c.getInt(1);
+                s.step = c.getDouble(2);
+                s.autoLow = c.getInt(3);
+                s.autoHigh = c.getInt(4);
+                s.autoStep = c.getDouble(5);
+            }
+        }
+        return s;
+    }
+
+    /**
+     * The automatic choices computed from scratch: rep range from the first 3 sessions, weight
+     * step from every distinct weight the exercise was done with.
+     */
+    private static Coach.Settings baseline(List<Session> history) {
+        List<Long> weights = new ArrayList<>();
+        for (Session s : history) {
+            for (int i = 0; i < s.n; i++) weights.add(Strength.centi(s.weight[i]));
+        }
+        return Coach.withBaseline(null, history.subList(0, Math.min(3, history.size())), weights);
+    }
+
+    Coach.Settings settings(long exerciseId) {
+        Coach.Settings s = new Coach.Settings();
+        try (Cursor c = rd().rawQuery("SELECT rep_low, rep_high, step FROM exercise WHERE id = ?", args(exerciseId))) {
+            if (c.moveToFirst()) {
+                s.low = c.getInt(0);
+                s.high = c.getInt(1);
+                s.step = c.getDouble(2);
+            }
+        }
+        return s;
+    }
+
+    /** Rep range and weight step of an exercise; 0 = automatic. */
+    void setSettings(long exerciseId, int low, int high, double step) {
+        setSettings(wr(), exerciseId, low, high, step);
+    }
+
+    private static void setSettings(SQLiteDatabase db, long exerciseId, int low, int high, double step) {
+        ContentValues v = new ContentValues();
+        v.put("rep_low", low > 0 && high >= low ? low : 0);
+        v.put("rep_high", low > 0 && high >= low ? high : 0);
+        v.put("step", step > 0 ? Strength.centi(step) / 100.0 : 0);
+        db.update("exercise", v, "id = ?", args(exerciseId));
+    }
+
+    /** How hard a day felt, 0 if not rated. */
+    int effort(long exerciseId, long day) {
+        try (Cursor c = rd().rawQuery("SELECT effort FROM log_note WHERE exercise_id = ? AND day = ?",
+                args(exerciseId, day))) {
+            return c.moveToFirst() ? c.getInt(0) : 0;
+        }
+    }
+
+    void setEffort(long exerciseId, long day, int effort) {
+        setEffort(wr(), exerciseId, day, effort);
+    }
+
+    private static void setEffort(SQLiteDatabase db, long exerciseId, long day, int effort) {
+        if (effort <= 0) {
+            db.delete("log_note", "exercise_id = ? AND day = ?", args(exerciseId, day));
+            return;
+        }
+        ContentValues v = new ContentValues();
+        v.put("exercise_id", exerciseId);
+        v.put("day", day);
+        v.put("effort", effort);
+        db.insertWithOnConflict("log_note", null, v, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     private static List<Session> history(SQLiteDatabase db, long exerciseId) {
@@ -444,6 +595,11 @@ final class Db extends SQLiteOpenHelper {
         db.delete("log_set", "exercise_id = ? AND day = ?", args(exerciseId, s.day));
         int idx = 0;
         for (int i = 0; i < s.n; i++) {
+            if (s.reps[i] > 0 && s.weight[i] >= 0) idx++;
+        }
+        if (idx == 0) setEffort(db, exerciseId, s.day, 0);
+        idx = 0;
+        for (int i = 0; i < s.n; i++) {
             if (s.reps[i] <= 0 || s.weight[i] < 0) continue;
             ins.bindLong(1, exerciseId);
             ins.bindLong(2, s.day);
@@ -465,14 +621,23 @@ final class Db extends SQLiteOpenHelper {
         v.put("best_e1rm", b.bestE1rm);
         v.put("max_weight", b.maxWeight);
         v.put("last_pr", h.isEmpty() ? 0 : h.get(h.size() - 1).flags);
+        Coach.Settings auto = baseline(h);
+        v.put("auto_low", auto.autoLow);
+        v.put("auto_high", auto.autoHigh);
+        v.put("auto_step", auto.autoStep);
         db.update("exercise", v, "id = ?", args(exerciseId));
     }
 
     // ---------------------------------------------------------------- backup
 
-    /** Exercise rows ordered by id: id, name. */
+    /** Exercise rows ordered by id: id, name, rep_low, rep_high, step. */
     Cursor exportExercises() {
-        return rd().rawQuery("SELECT id, name FROM exercise ORDER BY id", null);
+        return rd().rawQuery("SELECT id, name, rep_low, rep_high, step FROM exercise ORDER BY id", null);
+    }
+
+    /** Effort ratings in table order: exercise_id, day, effort. */
+    Cursor exportNotes() {
+        return rd().rawQuery("SELECT exercise_id, day, effort FROM log_note ORDER BY exercise_id, day", null);
     }
 
     /** Every logged set in table order: exercise_id, day, weight, reps. */
@@ -524,7 +689,11 @@ final class Db extends SQLiteOpenHelper {
             for (Backup.Ex ex : data.exercises) {
                 long id = addExercise(db, ex.name);
                 ids.put(key(ex.name), id);
-                for (Session s : ex.log) replaceSession(db, ins, id, s);
+                if (ex.low > 0 || ex.step > 0) setSettings(db, id, ex.low, ex.high, ex.step);
+                for (Session s : ex.log) {
+                    replaceSession(db, ins, id, s);
+                    setEffort(db, id, s.day, s.effort);
+                }
                 refreshStats(db, id);
                 r.exercises++;
                 r.sessions += ex.log.size();
