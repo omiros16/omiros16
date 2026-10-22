@@ -6,9 +6,10 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Typeface;
 import android.view.View;
 
-/** Minimal line chart of one value per session; PR sessions get a gold dot. */
+/** Minimal line chart of one value per session; PR sessions get a highlighted dot. */
 final class ChartView extends View {
     private float[] values = new float[0];
     private boolean[] pr = new boolean[0];
@@ -21,18 +22,19 @@ final class ChartView extends View {
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
 
-    ChartView(Context c) {
+    ChartView(Context c, Typeface face) {
         super(c);
         density = c.getResources().getDisplayMetrics().density;
-        line.setColor(ACCENT);
+        line.setColor(TEXT);
         line.setStyle(Paint.Style.STROKE);
-        line.setStrokeWidth(2.2f * density);
+        line.setStrokeWidth(2f * density);
         line.setStrokeJoin(Paint.Join.ROUND);
         line.setStrokeCap(Paint.Cap.ROUND);
-        grid.setColor(FAINT);
+        grid.setColor(LINE);
         grid.setStrokeWidth(density);
         text.setColor(DIM);
-        text.setTextSize(11 * c.getResources().getDisplayMetrics().scaledDensity);
+        text.setTypeface(face);
+        text.setTextSize(12 * c.getResources().getDisplayMetrics().scaledDensity);
     }
 
     void setData(float[] values, boolean[] pr, String firstLabel, String lastLabel) {
@@ -89,8 +91,8 @@ final class ChartView extends View {
             if (!pr[i] && !last) continue;
             float x = left + i * step;
             float y = bottom - (values[i] - min) / (max - min) * (bottom - top);
-            dot.setColor(pr[i] ? GOLD : ACCENT);
-            c.drawCircle(x, y, 3.8f * density, dot);
+            dot.setColor(pr[i] ? MARK : TEXT);
+            c.drawCircle(x, y, 4f * density, dot);
         }
     }
 }

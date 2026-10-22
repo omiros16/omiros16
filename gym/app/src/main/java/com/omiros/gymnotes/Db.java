@@ -374,7 +374,7 @@ final class Db extends SQLiteOpenHelper {
         wr().delete("exercise", "id = ?", args(id));
     }
 
-    /** Exercise id -> "Δευτέρα · Παρασκευή" (the presets it is in, in preset order). */
+    /** Exercise id -> "Δευτέρα, Παρασκευή" (the presets it is in, in preset order). */
     Map<Long, String> presetNamesByExercise() {
         Map<Long, String> out = new HashMap<>();
         try (Cursor c = rd().rawQuery("SELECT i.exercise_id, p.name FROM preset_item i"
@@ -382,7 +382,7 @@ final class Db extends SQLiteOpenHelper {
             while (c.moveToNext()) {
                 long id = c.getLong(0);
                 String prev = out.get(id);
-                out.put(id, prev == null ? c.getString(1) : prev + " · " + c.getString(1));
+                out.put(id, prev == null ? c.getString(1) : prev + ", " + c.getString(1));
             }
         }
         return out;
@@ -393,7 +393,7 @@ final class Db extends SQLiteOpenHelper {
         try (Cursor c = rd().rawQuery("SELECT p.name FROM preset_item i JOIN preset p ON p.id = i.preset_id"
                 + " WHERE i.exercise_id = ? ORDER BY p.pos, p.id", args(exerciseId))) {
             while (c.moveToNext()) {
-                if (sb.length() > 0) sb.append(" · ");
+                if (sb.length() > 0) sb.append(", ");
                 sb.append(c.getString(0));
             }
         }

@@ -7,6 +7,7 @@ import android.content.res.ColorStateList;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -23,7 +24,9 @@ import java.util.Set;
 final class PresetScreen extends Screen {
     private final long presetId;
     private String name = "";
+    private TextView empty;
     private LinearLayout list;
+    private LinearLayout add;
 
     PresetScreen(MainActivity act, long presetId) {
         super(act);
@@ -50,18 +53,20 @@ final class PresetScreen extends Screen {
 
         ScrollView sv = new ScrollView(act);
         LinearLayout col = ui.column();
-        col.setPadding(ui.dp(16), ui.dp(4), ui.dp(16), ui.dp(28));
+        col.setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(32));
         sv.addView(col);
-        list = ui.column();
-        col.addView(list);
-        TextView add = ui.button("+ Προσθήκη άσκησης", false);
+        empty = ui.text("Δεν έχει ασκήσεις ακόμα. Διάλεξε από τη λίστα σου ή φτιάξε καινούργια.", 15, SOFT, false);
+        empty.setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(16));
+        col.addView(empty);
+        list = ui.group();
+        col.addView(list, Ui.matchWrap());
+        add = ui.actionRow(R.drawable.ic_add, "Προσθήκη άσκησης", null);
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showPicker();
             }
         });
-        col.addView(add, ui.spaced(12));
         TextView hint = ui.text("Πάτα μια άσκηση για να γράψεις τα sets της. Ό,τι γράφεις φαίνεται σε κάθε "
                 + "πρόγραμμα που έχει την ίδια άσκηση.", 13, DIM, false);
         hint.setPadding(ui.dp(4), ui.dp(16), ui.dp(4), 0);
@@ -89,42 +94,35 @@ final class PresetScreen extends Screen {
         for (Db.Exercise e : items) {
             if (e.lastDay == today) done++;
         }
-        setTitle(name, items.isEmpty() ? null : "Σήμερα " + done + "/" + items.size()
-                + (done == items.size() ? " ✓ όλες έγιναν" : " ασκήσεις"));
+        setTitle(name, items.isEmpty() ? null : done == items.size() ? "Όλες έγιναν σήμερα"
+                : "Σήμερα " + done + " από " + items.size());
 
         list.removeAllViews();
-        if (items.isEmpty()) {
-            TextView empty = ui.text("Δεν έχει ασκήσεις ακόμα.\nΠάτα «+ Προσθήκη άσκησης» για να διαλέξεις "
-                    + "από τη λίστα σου ή να φτιάξεις καινούργια.", 15, SOFT, false);
-            empty.setLineSpacing(0, 1.15f);
-            empty.setBackground(ui.round(CARD, 16));
-            empty.setPadding(ui.dp(18), ui.dp(18), ui.dp(18), ui.dp(18));
-            list.addView(empty, Ui.matchWrap());
-        }
-        for (int i = 0; i < items.size(); i++) {
-            list.addView(card(items.get(i), today), ui.spaced(i == 0 ? 0 : 10));
-        }
+        empty.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
+        for (Db.Exercise e : items) ui.addRow(list, card(e, today));
+        ui.addRow(list, add);
     }
 
     private View card(final Db.Exercise e, long today) {
         final LinearLayout card = ui.column();
-        card.setBackground(ui.ripple(CARD, 16));
-        card.setPadding(ui.dp(18), ui.dp(10), ui.dp(6), ui.dp(14));
+        card.setBackground(ui.ripple(0, 0));
+        card.setPadding(ui.dp(18), ui.dp(8), ui.dp(4), ui.dp(16));
 
         LinearLayout top = ui.row();
-        TextView title = ui.text(e.name, 17, TEXT, true);
+        TextView title = ui.text(e.name, 17, TEXT, ui.semibold);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
         top.addView(title, Ui.fill());
         if (e.lastDay == today) {
-            TextView done = ui.text("✓ σήμερα", 12, GREEN, true);
-            done.setBackground(ui.round(GREEN_BG, 10));
-            done.setPadding(ui.dp(8), ui.dp(3), ui.dp(8), ui.dp(3));
-            top.addView(done);
+            ImageView done = ui.icon(R.drawable.ic_check, BG);
+            done.setBackground(ui.round(TEXT, 11));
+            done.setPadding(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3));
+            done.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            done.setContentDescription("Έγινε σήμερα");
+            top.addView(done, ui.size(22, 22));
         }
         final ImageView more = ui.iconButton(R.drawable.ic_more, "Επιλογές");
         more.setImageTintList(ColorStateList.valueOf(DIM));
-        more.setLayoutParams(ui.size(40, 40));
         more.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -134,37 +132,33 @@ final class PresetScreen extends Screen {
         top.addView(more);
         card.addView(top);
 
+        // Done today: what to do next time; otherwise: today's target.
+        Coach.Advice advice = db.advice(e.id, e.lastDay == today ? today + 1 : today);
+        if (advice != null) {
+            LinearLayout next = ui.row();
+            next.setGravity(Gravity.BOTTOM);
+            next.setPadding(0, 0, ui.dp(14), ui.dp(6));
+            next.addView(ui.text(e.lastDay == today ? "Επόμενη φορά" : "Στόχος", 14, MARK, true));
+            TextView target = ui.figures(20, TEXT, true);
+            target.setText(Ui.quiet(Fmt.target(advice)));
+            LinearLayout.LayoutParams lp = Ui.wrap();
+            lp.leftMargin = ui.dp(10);
+            next.addView(target, lp);
+            card.addView(next);
+        }
+
         TextView last;
         if (e.lastDay == Db.NO_DAY) {
             last = ui.text("Δεν έχει γίνει ακόμα, πάτα για να ξεκινήσεις", 14, DIM, false);
         } else {
             Session s = db.session(e.id, e.lastDay);
-            last = ui.text(Fmt.day(e.lastDay, today) + "  ·  " + Fmt.sets(s), 15, SOFT, false);
+            last = ui.text(Fmt.day(e.lastDay, today) + ": " + Fmt.sets(s), 14, SOFT, false);
         }
-        last.setPadding(0, 0, ui.dp(10), 0);
+        last.setPadding(0, 0, ui.dp(14), 0);
         card.addView(last);
 
-        if (e.bestE1rm > 0) {
-            TextView record = ui.text("Ρεκόρ ≈1RM " + Fmt.num1(e.bestE1rm) + " kg  ·  βαρύτερο "
-                    + Fmt.kg(e.maxWeight) + " kg", 12, DIM, false);
-            record.setPadding(0, ui.dp(4), 0, 0);
-            card.addView(record);
-        }
-        if (e.lastPr != 0) {
-            TextView pr = ui.text("🏆 " + Fmt.badges(e.lastPr)
-                    + (e.lastDay == today ? " σήμερα" : " την τελευταία φορά"), 12, GOLD, true);
-            pr.setPadding(0, ui.dp(4), 0, 0);
-            card.addView(pr);
-        }
-
-        // Done today: what to do next time; otherwise: today's target.
-        Coach.Advice advice = db.advice(e.id, e.lastDay == today ? today + 1 : today);
-        if (advice != null) {
-            TextView next = ui.text(Fmt.arrow(advice.kind) + "  " + (e.lastDay == today ? "Επόμενη φορά: " : "Στόχος: ")
-                    + Fmt.target(advice), 14, ACCENT_SOFT, true);
-            next.setPadding(0, ui.dp(8), ui.dp(10), 0);
-            card.addView(next);
-        }
+        if (e.lastPr != 0) card.addView(prLine(Fmt.badges(e.lastPr)
+                + (e.lastDay == today ? " σήμερα" : " την τελευταία φορά")));
 
         card.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -180,6 +174,16 @@ final class PresetScreen extends Screen {
             }
         });
         return card;
+    }
+
+    private View prLine(String text) {
+        LinearLayout line = ui.row();
+        line.setPadding(0, ui.dp(6), 0, 0);
+        line.addView(ui.icon(R.drawable.ic_trophy, MARK), ui.size(16, 16));
+        TextView t = ui.text(text, 13, MARK, true);
+        t.setPadding(ui.dp(6), 0, 0, 0);
+        line.addView(t);
+        return line;
     }
 
     private void itemMenu(final Db.Exercise e, View anchor) {
@@ -236,7 +240,7 @@ final class PresetScreen extends Screen {
         final List<Db.Exercise> all = db.exercises();
 
         LinearLayout content = ui.column();
-        content.setPadding(ui.dp(20), ui.dp(4), ui.dp(20), 0);
+        content.setPadding(ui.dp(20), ui.dp(8), ui.dp(20), 0);
         final EditText query = ui.field("Αναζήτηση ή όνομα νέας άσκησης");
         content.addView(query, Ui.matchWrap());
         ScrollView sv = new ScrollView(act);
@@ -281,12 +285,12 @@ final class PresetScreen extends Screen {
                     if (Db.key(e.name).equals(k)) exact = true;
                 }
                 if (!typed.isEmpty() && !exact) {
-                    box.addView(pickRow("+ Νέα άσκηση «" + typed + "»", ACCENT_SOFT, true, typed, add));
+                    box.addView(pickRow("Νέα άσκηση «" + typed + "»", MARK, true, typed, add));
                 }
                 for (Db.Exercise e : all) {
                     if (!k.isEmpty() && !Db.key(e.name).contains(k)) continue;
                     boolean already = inPreset.contains(e.id);
-                    box.addView(pickRow(already ? "✓  " + e.name : e.name, already ? DIM : TEXT, !already, e.name, add));
+                    box.addView(pickRow(e.name, already ? DIM : TEXT, !already, e.name, add));
                 }
                 if (box.getChildCount() == 0) {
                     TextView t = ui.text("Γράψε το όνομα μιας άσκησης για να τη φτιάξεις.", 14, DIM, false);
@@ -315,9 +319,10 @@ final class PresetScreen extends Screen {
         ui.styleButtons(dialog, false);
     }
 
+    /** A name to tap; one already in the program is greyed out with a tick. */
     private View pickRow(String label, int color, boolean enabled, final String exerciseName, final Ui.OnText onPick) {
-        TextView t = ui.text(label, 16, color, enabled);
-        t.setPadding(ui.dp(10), ui.dp(12), ui.dp(10), ui.dp(12));
+        TextView t = ui.text(label, 16, color, enabled ? ui.medium : ui.regular);
+        t.setPadding(ui.dp(10), ui.dp(13), ui.dp(10), ui.dp(13));
         if (enabled) {
             t.setBackground(ui.ripple(0, 10));
             t.setOnClickListener(new View.OnClickListener() {
@@ -326,6 +331,10 @@ final class PresetScreen extends Screen {
                     onPick.run(exerciseName);
                 }
             });
+        } else {
+            t.setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, R.drawable.ic_check, 0);
+            t.setCompoundDrawableTintList(ColorStateList.valueOf(DIM));
+            t.setContentDescription(label + ", ήδη στο πρόγραμμα");
         }
         return t;
     }

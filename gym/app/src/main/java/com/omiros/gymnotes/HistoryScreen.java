@@ -2,8 +2,8 @@ package com.omiros.gymnotes;
 
 import static com.omiros.gymnotes.Theme.*;
 
-import android.content.res.ColorStateList;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -50,7 +50,6 @@ final class HistoryScreen extends Screen {
         LinearLayout root = ui.column();
         root.setBackgroundColor(BG);
         ImageView add = ui.iconButton(R.drawable.ic_add, "Καταγραφή");
-        add.setImageTintList(ColorStateList.valueOf(ACCENT));
         add.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -67,30 +66,40 @@ final class HistoryScreen extends Screen {
         root.addView(header(true, add, more));
 
         LinearLayout head = ui.column();
-        stats = ui.column();
-        stats.setBackground(ui.round(CARD, 16));
-        stats.setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(12));
+        head.setPadding(ui.dp(16), ui.dp(10), ui.dp(16), 0);
+        stats = ui.group();
         head.addView(stats, Ui.matchWrap());
 
         chartCard = ui.column();
-        chartCard.setBackground(ui.round(CARD, 16));
-        chartCard.setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(8));
-        chartTitle = ui.text(13, DIM, true);
-        chartTitle.setPadding(ui.dp(4), 0, 0, ui.dp(6));
-        chartCard.addView(chartTitle);
-        chart = new ChartView(act);
-        chartCard.addView(chart, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(170)));
-        head.addView(chartCard, ui.spaced(12));
+        chartCard.setPadding(ui.dp(4), ui.dp(26), 0, 0);
+        LinearLayout chartHead = ui.row();
+        chartTitle = ui.text(14, SOFT, true);
+        chartHead.addView(chartTitle, Ui.fill());
+        View dot = new View(act);
+        dot.setBackground(ui.round(MARK, 4));
+        chartHead.addView(dot, ui.size(8, 8));
+        TextView legend = ui.text("PR", 13, DIM, false);
+        legend.setPadding(ui.dp(6), 0, ui.dp(4), 0);
+        chartHead.addView(legend);
+        chartCard.addView(chartHead);
+        chart = new ChartView(act, ui.regular);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(180));
+        clp.topMargin = ui.dp(12);
+        chartCard.addView(chart, clp);
+        head.addView(chartCard, Ui.matchWrap());
 
         listTitle = ui.label("Καταγραφές");
+        listTitle.setPadding(ui.dp(4), ui.dp(26), 0, ui.dp(4));
         head.addView(listTitle);
 
         list = new ListView(act);
-        list.setDivider(null);
+        list.setDivider(new InsetDrawable(new ColorDrawable(LINE), ui.dp(20), 0, 0, 0));
+        list.setDividerHeight(1);
+        list.setHeaderDividersEnabled(false);
         list.setSelector(new ColorDrawable(0));
         list.setClipToPadding(false);
         list.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_OVERLAY);
-        list.setPadding(ui.dp(16), ui.dp(2), ui.dp(16), ui.dp(28));
+        list.setPadding(0, 0, 0, ui.dp(32));
         list.addHeaderView(head, null, false);
         adapter = new SessionAdapter();
         list.setAdapter(adapter);
@@ -155,9 +164,9 @@ final class HistoryScreen extends Screen {
         stats.removeAllViews();
         long today = Fmt.today();
         if (h.isEmpty()) {
-            TextView t = ui.text("Δεν υπάρχουν καταγραφές ακόμα.\nΠάτα + πάνω δεξιά για να γράψεις την πρώτη.",
+            TextView t = ui.text("Δεν υπάρχουν καταγραφές ακόμα. Πάτα + πάνω δεξιά για να γράψεις την πρώτη.",
                     15, SOFT, false);
-            t.setPadding(0, ui.dp(6), 0, ui.dp(4));
+            t.setPadding(ui.dp(18), ui.dp(16), ui.dp(18), ui.dp(16));
             stats.addView(t);
             return;
         }
@@ -193,14 +202,14 @@ final class HistoryScreen extends Screen {
         Coach.Advice next = db.advice(exerciseId, today + 1);
         if (next != null) {
             statRow(h.get(h.size() - 1).day == today ? "Επόμενη φορά" : "Στόχος", Fmt.target(next),
-                    Fmt.arrow(next.kind) + " " + Fmt.kind(next.kind));
+                    Fmt.arrow(next.kind) + " " + Fmt.kind(next.kind)).setTextColor(MARK);
             // What the coach has learned about this person's day-to-day spread in this exercise.
             statRow("Διακύμανση μέρας", "±" + Fmt.num1(next.spread * 100) + "%",
                     next.learned >= 3 ? "από τις " + next.learned + " τελευταίες προπονήσεις σου" : "αρχική εκτίμηση");
         }
         if (b.bestE1rm > 0) {
             statRow("Ρεκόρ ≈1RM", Fmt.num1(b.bestE1rm) + " kg", Fmt.kg(b.bestE1rmWeight) + " × " + b.bestE1rmReps
-                    + "  ·  " + Fmt.day(bestDay, today));
+                    + ", " + Fmt.day(bestDay, today));
             statRow("Βαρύτερο", Fmt.kg(heaviest) + " kg × " + heaviestReps, Fmt.day(heaviestDay, today));
         }
         if (mostReps > 0) statRow("Ρεκόρ με BW", mostReps + " reps", Fmt.day(repsDay, today));
@@ -208,22 +217,28 @@ final class HistoryScreen extends Screen {
         statRow("Μέρες με PR", String.valueOf(prSessions), null);
     }
 
-    private void statRow(String label, String value, String note) {
+    /** A label with its value (and a note under it); returns the label. */
+    private TextView statRow(String label, String value, String note) {
         LinearLayout r = ui.row();
-        r.setPadding(0, ui.dp(5), 0, ui.dp(5));
-        r.addView(ui.text(label, 14, DIM, false), Ui.fill());
+        r.setPadding(ui.dp(18), ui.dp(12), ui.dp(18), ui.dp(12));
+        TextView name = ui.text(label, 15, SOFT, false);
+        r.addView(name, Ui.fill());
         LinearLayout right = ui.column();
         right.setGravity(Gravity.END);
-        TextView v = ui.text(value, 16, TEXT, true);
+        right.setPadding(ui.dp(12), 0, 0, 0);
+        TextView v = ui.figures(20, TEXT, true);
+        v.setText(Ui.quiet(value));
         v.setGravity(Gravity.END);
         right.addView(v);
         if (note != null) {
-            TextView n = ui.text(note, 12, DIM, false);
+            TextView n = ui.text(note, 13, DIM, false);
             n.setGravity(Gravity.END);
+            n.setPadding(0, ui.dp(3), 0, 0);
             right.addView(n);
         }
         r.addView(right);
-        stats.addView(r, Ui.matchWrap());
+        ui.addRow(stats, r);
+        return name;
     }
 
     private void fillChart(List<Session> h) {
@@ -241,7 +256,7 @@ final class HistoryScreen extends Screen {
             return;
         }
         chartCard.setVisibility(View.VISIBLE);
-        chartTitle.setText(weighted ? "≈1RM ανά προπόνηση (kg)  ·  🏆 = PR" : "Max reps ανά προπόνηση  ·  🏆 = PR");
+        chartTitle.setText(weighted ? "≈1RM ανά προπόνηση, kg" : "Max reps ανά προπόνηση");
         float[] v = new float[points.size()];
         boolean[] pr = new boolean[points.size()];
         for (int i = 0; i < v.length; i++) {
@@ -310,30 +325,30 @@ final class HistoryScreen extends Screen {
             Holder h;
             if (convertView == null) {
                 h = new Holder();
-                LinearLayout wrap = ui.column();
-                wrap.setPadding(0, ui.dp(4), 0, ui.dp(4));
-                LinearLayout card = ui.column();
-                card.setBackground(ui.ripple(CARD, 14));
-                card.setDuplicateParentStateEnabled(true);
-                card.setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12));
+                LinearLayout item = ui.column();
+                item.setBackground(ui.ripple(0, 0));
+                item.setPadding(ui.dp(20), ui.dp(14), ui.dp(20), ui.dp(14));
                 LinearLayout top = ui.row();
-                h.date = ui.text(15, TEXT, true);
+                h.date = ui.text(15, SOFT, ui.semibold);
                 top.addView(h.date, Ui.fill());
                 h.score = ui.text(13, DIM, false);
                 top.addView(h.score);
-                card.addView(top);
-                h.sets = ui.text(15, SOFT, false);
-                h.sets.setPadding(0, ui.dp(3), 0, 0);
-                card.addView(h.sets);
+                item.addView(top);
+                h.sets = ui.figures(19, TEXT, true);
+                h.sets.setPadding(0, ui.dp(6), 0, 0);
+                item.addView(h.sets);
                 h.feel = ui.text(13, DIM, false);
-                h.feel.setPadding(0, ui.dp(2), 0, 0);
-                card.addView(h.feel);
-                h.pr = ui.text(12, GOLD, true);
-                h.pr.setPadding(0, ui.dp(4), 0, 0);
-                card.addView(h.pr);
-                wrap.addView(card, Ui.matchWrap());
-                wrap.setTag(h);
-                convertView = wrap;
+                h.feel.setPadding(0, ui.dp(5), 0, 0);
+                item.addView(h.feel);
+                h.pr = ui.row();
+                h.pr.setPadding(0, ui.dp(6), 0, 0);
+                h.pr.addView(ui.icon(R.drawable.ic_trophy, MARK), ui.size(16, 16));
+                h.prText = ui.text(13, MARK, true);
+                h.prText.setPadding(ui.dp(6), 0, 0, 0);
+                h.pr.addView(h.prText);
+                item.addView(h.pr);
+                item.setTag(h);
+                convertView = item;
             } else {
                 h = (Holder) convertView.getTag();
             }
@@ -341,10 +356,10 @@ final class HistoryScreen extends Screen {
             h.date.setText(Fmt.day(s.day, Fmt.today()));
             double e = s.bestE1rm();
             h.score.setText(e > 0 ? "≈1RM " + Fmt.num1(e) + " kg" : "max " + s.maxReps() + " reps");
-            h.sets.setText(Fmt.sets(s));
+            h.sets.setText(Ui.quiet(Fmt.sets(s)));
             h.feel.setText(feelLine(s));
             h.feel.setVisibility(s.rated() ? View.VISIBLE : View.GONE);
-            h.pr.setText("🏆 " + Fmt.badges(s.flags));
+            h.prText.setText(Fmt.badges(s.flags));
             h.pr.setVisibility(s.flags != 0 ? View.VISIBLE : View.GONE);
             return convertView;
         }
@@ -368,6 +383,7 @@ final class HistoryScreen extends Screen {
         TextView score;
         TextView sets;
         TextView feel;
-        TextView pr;
+        LinearLayout pr;
+        TextView prText;
     }
 }

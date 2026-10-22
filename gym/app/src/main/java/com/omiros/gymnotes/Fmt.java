@@ -51,11 +51,11 @@ final class Fmt {
         return d.format(WITH_YEAR);
     }
 
-    /** "Σήμερα · Τετ 1/10" style label for the date being logged. */
+    /** "Σήμερα, Τετ 1/10" style label for the date being logged. */
     static String dayWithDate(long day, long today) {
         String shortDate = capitalize(LocalDate.ofEpochDay(day).format(SHORT));
-        if (day == today) return "Σήμερα · " + shortDate;
-        if (day == today - 1) return "Χθες · " + shortDate;
+        if (day == today) return "Σήμερα, " + shortDate;
+        if (day == today - 1) return "Χθες, " + shortDate;
         return day(day, today);
     }
 
@@ -138,12 +138,12 @@ final class Fmt {
         return f == Coach.EASY ? "έμεναν 3+" : f == Coach.NORMAL ? "έμεναν 1–2" : f == Coach.HARD ? "έμενε 0" : "";
     }
 
-    /** Short badge text, e.g. "PR βάρους · PR 1RM". */
+    /** Short badge text, e.g. "PR βάρους, PR 1RM". */
     static String badges(int flags) {
         StringBuilder sb = new StringBuilder();
         if ((flags & Strength.WEIGHT) != 0) sb.append("PR βάρους");
-        if ((flags & Strength.E1RM) != 0) sb.append(sb.length() > 0 ? " · " : "").append("PR 1RM");
-        if ((flags & Strength.REPS) != 0) sb.append(sb.length() > 0 ? " · " : "").append("PR reps");
+        if ((flags & Strength.E1RM) != 0) sb.append(sb.length() > 0 ? ", " : "").append("PR 1RM");
+        if ((flags & Strength.REPS) != 0) sb.append(sb.length() > 0 ? ", " : "").append("PR reps");
         return sb.toString();
     }
 
@@ -151,17 +151,17 @@ final class Fmt {
     static String describe(int flags, double w, int r, Strength.Bests prev) {
         StringBuilder sb = new StringBuilder();
         if ((flags & Strength.WEIGHT) != 0) {
-            sb.append("• Βαρύτερο σετ: ").append(kg(w)).append(" kg × ").append(r)
-                    .append("  (μέχρι τώρα ").append(kg(prev.maxWeight)).append(" kg)");
+            sb.append("Βαρύτερο σετ: ").append(kg(w)).append(" kg × ").append(r)
+                    .append(" (μέχρι τώρα ").append(kg(prev.maxWeight)).append(" kg)");
         }
         if ((flags & Strength.E1RM) != 0) {
             if (sb.length() > 0) sb.append('\n');
-            sb.append("• Εκτιμώμενο 1RM: ").append(num1(Strength.e1rm(w, r))).append(" kg  (μέχρι τώρα ")
+            sb.append("Εκτιμώμενο 1RM: ").append(num1(Strength.e1rm(w, r))).append(" kg (μέχρι τώρα ")
                     .append(num1(prev.bestE1rm)).append(" kg)");
         }
         if ((flags & Strength.REPS) != 0) {
             if (sb.length() > 0) sb.append('\n');
-            sb.append("• ").append(r).append(" reps με ").append(load(w)).append("  (μέχρι τώρα max ")
+            sb.append(r).append(" reps με ").append(load(w)).append(" (μέχρι τώρα max ")
                     .append(prev.repsAtOrAbove(w)).append(")");
         }
         return sb.toString();

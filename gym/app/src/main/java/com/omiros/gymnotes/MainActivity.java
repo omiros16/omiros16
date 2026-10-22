@@ -281,7 +281,7 @@ public class MainActivity extends Activity {
         LinearLayout box = ui.row();
         box.setPadding(ui.dp(24), ui.dp(22), ui.dp(24), ui.dp(22));
         ProgressBar bar = new ProgressBar(this);
-        bar.setIndeterminateTintList(ColorStateList.valueOf(ACCENT));
+        bar.setIndeterminateTintList(ColorStateList.valueOf(TEXT));
         box.addView(bar, ui.size(36, 36));
         TextView t = ui.text(message, 16, TEXT, false);
         t.setPadding(ui.dp(18), 0, 0, 0);

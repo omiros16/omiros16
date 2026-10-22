@@ -83,7 +83,7 @@ abstract class Screen {
     /** Title bar: optional back arrow, title with a subtitle line, then action icons. */
     LinearLayout header(boolean back, View... actions) {
         LinearLayout bar = ui.row();
-        bar.setPadding(back ? ui.dp(4) : ui.dp(18), ui.dp(10), ui.dp(6), ui.dp(8));
+        bar.setPadding(back ? ui.dp(4) : ui.dp(20), ui.dp(back ? 8 : 18), ui.dp(6), ui.dp(back ? 8 : 6));
         if (back) {
             ImageView b = ui.iconButton(R.drawable.ic_back, "Πίσω");
             b.setOnClickListener(new View.OnClickListener() {
@@ -95,13 +95,14 @@ abstract class Screen {
             bar.addView(b);
         }
         LinearLayout col = ui.column();
-        col.setPadding(back ? ui.dp(6) : 0, 0, ui.dp(6), 0);
-        titleView = ui.text(back ? 20 : 24, TEXT, true);
+        col.setPadding(back ? ui.dp(4) : 0, 0, ui.dp(6), 0);
+        titleView = ui.text(back ? 24 : 32, TEXT, ui.figuresBold);
         titleView.setSingleLine(true);
         titleView.setEllipsize(TextUtils.TruncateAt.END);
-        subtitleView = ui.text(13, ACCENT_SOFT, false);
+        subtitleView = ui.text(14, DIM, false);
         subtitleView.setSingleLine(true);
         subtitleView.setEllipsize(TextUtils.TruncateAt.END);
+        subtitleView.setPadding(0, ui.dp(3), 0, 0);
         subtitleView.setVisibility(View.GONE);
         col.addView(titleView);
         col.addView(subtitleView);
@@ -168,7 +169,7 @@ abstract class Screen {
         for (int i = 0; i < Coach.RANGES.length; i++) ranges[i + 1] = Coach.rangeLabel(Coach.RANGES[i][0], Coach.RANGES[i][1]);
         box.addView(pills(ranges, range));
         TextView rangeHint = ui.text("Ανεβαίνεις κιλά όταν πιάσεις το πάνω όριο σε όλα τα sets.", 13, DIM, false);
-        rangeHint.setPadding(ui.dp(4), ui.dp(6), 0, 0);
+        rangeHint.setPadding(ui.dp(4), ui.dp(8), 0, 0);
         box.addView(rangeHint);
         box.addView(ui.label("Βήμα κιλών"));
         String[] steps = new String[Coach.STEPS.length + 1];
@@ -177,7 +178,7 @@ abstract class Screen {
         box.addView(pills(steps, step));
         TextView stepHint = ui.text("Η μικρότερη αύξηση που έχει το μηχάνημα ή οι αλτήρες. Το αυτόματο τη βρίσκει "
                 + "από τα κιλά που έχεις γράψει.", 13, DIM, false);
-        stepHint.setPadding(ui.dp(4), ui.dp(6), 0, 0);
+        stepHint.setPadding(ui.dp(4), ui.dp(8), 0, 0);
         box.addView(stepHint);
 
         ui.show(ui.dialog().setTitle("Πρόοδος άσκησης").setView(box).setNegativeButton("Άκυρο", null)
@@ -209,7 +210,7 @@ abstract class Screen {
             });
             ui.stylePill(views[i], i == selected[0]);
             LinearLayout.LayoutParams lp = Ui.wrap();
-            lp.rightMargin = ui.dp(6);
+            lp.rightMargin = ui.dp(8);
             row.addView(views[i], lp);
         }
         HorizontalScrollView h = new HorizontalScrollView(act);
@@ -242,7 +243,7 @@ abstract class Screen {
                         + "• Ποτέ πάνω από +" + Math.round(Coach.MAX_JUMP * 100) + "% σε μία φορά. Αν το επόμενο "
                         + "βάρος είναι μεγάλο άλμα (π.χ. ελαφριοί αλτήρες), κάνεις πρώτα λίγα reps παραπάνω.\n\n"
                         + "Το εύρος reps και το βήμα κιλών βγαίνουν αυτόματα από τα δεδομένα σου· μπορείς να τα "
-                        + "αλλάξεις από την κάρτα του στόχου.");
+                        + "αλλάξεις από το «Αλλαγή» κάτω από τον στόχο.");
     }
 
     void setTitle(String title, String subtitle) {

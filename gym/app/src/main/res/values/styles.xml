@@ -1,18 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:colorPrimary">#FF0F1115</item>
-        <item name="android:colorPrimaryDark">#FF0F1115</item>
-        <item name="android:colorAccent">#FF5B9DFF</item>
+        <item name="android:colorPrimary">#FF141414</item>
+        <item name="android:colorPrimaryDark">#FF141414</item>
+        <item name="android:colorAccent">#FFEBC55E</item>
+        <item name="android:colorControlActivated">#FFEBC55E</item>
         <item name="android:windowBackground">@drawable/bg</item>
-        <item name="android:statusBarColor">#FF0F1115</item>
-        <item name="android:navigationBarColor">#FF0F1115</item>
-        <item name="android:colorBackground">#FF1A1D24</item>
+        <item name="android:statusBarColor">#FF141414</item>
+        <item name="android:navigationBarColor">#FF141414</item>
+        <item name="android:colorBackground">#FF1E1E1E</item>
+        <item name="android:textColorHighlight">#66EBC55E</item>
+        <item name="android:popupMenuStyle">@style/PopupMenu</item>
+        <item name="android:textAppearanceLargePopupMenu">@style/PopupText</item>
+        <item name="android:textAppearanceSmallPopupMenu">@style/PopupText</item>
+    </style>
+
+    <style name="PopupMenu" parent="@android:style/Widget.Material.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_bg</item>
+    </style>
+
+    <style name="PopupText" parent="@android:style/TextAppearance.Material.Widget.PopupMenu.Large">
+        <item name="android:fontFamily">@font/sofia_sans_regular</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">#FFF2F1ED</item>
     </style>
 
     <style name="DialogTheme" parent="@android:style/Theme.Material.Dialog.Alert">
-        <item name="android:colorAccent">#FF5B9DFF</item>
-        <item name="android:colorBackground">#FF1A1D24</item>
-        <item name="android:textColorPrimary">#FFEEF1F6</item>
+        <item name="android:colorAccent">#FFEBC55E</item>
+        <item name="android:colorControlActivated">#FFEBC55E</item>
+        <item name="android:colorBackground">#FF1E1E1E</item>
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="android:textColorPrimary">#FFF2F1ED</item>
+        <item name="android:textColorSecondary">#FFB3B1AC</item>
+        <item name="android:textColorHighlight">#66EBC55E</item>
     </style>
 </resources>
