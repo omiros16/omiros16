@@ -28,11 +28,12 @@ import java.util.Map;
  * <pre>
  * {"app": "gymnotes", "format": 1, "exported": "2026-10-01",
  *  "exercises": [{"name": "Lat pulldown", "reps": [8, 12], "step": 2.5,
- *                 "log": [{"date": "2026-09-26", "effort": 2, "sets": [[50, 10], [50, 9]]}]}],
+ *                 "log": [{"date": "2026-09-26", "sets": [[50, 10, 1], [50, 9]]}]}],
  *  "presets": [{"name": "Δευτέρα", "exercises": ["Lat pulldown"]}]}
  * </pre>
- * "reps" / "step" (progression settings) and "effort" (1 easy, 2 normal, 3 at the limit) are
- * optional. Both directions stream, so memory stays small however long the history is.
+ * A set is [kg, reps] or [kg, reps, feel] (1 easy, 2 normal, 3 at the limit). "reps" / "step"
+ * (progression settings) and the feel are optional; files of version 1.1 with one "effort" per day
+ * still read. Both directions stream, so memory stays small however long the history is.
  */
 final class Backup {
     static final String APP = "gymnotes";
@@ -79,10 +80,9 @@ final class Backup {
         w.name("exported").value(LocalDate.now().toString());
 
         w.name("exercises").beginArray();
-        // The cursors are all ordered by exercise id (then day): walk them side by side in one pass.
-        try (Cursor ex = db.exportExercises(); Cursor sets = db.exportSets(); Cursor notes = db.exportNotes()) {
+        // Both cursors are ordered by exercise id: walk them side by side in one pass.
+        try (Cursor ex = db.exportExercises(); Cursor sets = db.exportSets()) {
             boolean more = sets.moveToFirst();
-            boolean moreNotes = notes.moveToFirst();
             while (ex.moveToNext()) {
                 long id = ex.getLong(0);
                 w.beginObject();
@@ -103,17 +103,12 @@ final class Backup {
                         sessions++;
                         w.beginObject();
                         w.name("date").value(LocalDate.ofEpochDay(d).toString());
-                        while (moreNotes && (notes.getLong(0) < id || (notes.getLong(0) == id && notes.getLong(1) < d))) {
-                            moreNotes = notes.moveToNext();
-                        }
-                        if (moreNotes && notes.getLong(0) == id && notes.getLong(1) == d) {
-                            w.name("effort").value(notes.getInt(2));
-                        }
                         w.name("sets").beginArray();
                     }
                     w.beginArray();
                     writeKg(w, sets.getDouble(2));
                     w.value(sets.getInt(3));
+                    if (sets.getInt(4) > 0) w.value(sets.getInt(4));
                     w.endArray();
                     more = sets.moveToNext();
                 }
@@ -296,12 +291,16 @@ final class Backup {
         r.endObject();
         if (day == null || s.n == 0) return null;
         Session out = new Session(day);
-        for (int i = 0; i < s.n; i++) out.add(s.weight[i], s.reps[i]);
-        out.effort = effort;
+        for (int i = 0; i < s.n; i++) {
+            int f = s.feel[i];
+            // Version 1.1 rated the whole day: easy / normal for every set, at the limit for the last.
+            if (f == 0 && effort != 0 && (effort != Coach.HARD || i == s.n - 1)) f = effort;
+            out.add(s.weight[i], s.reps[i], f);
+        }
         return out;
     }
 
-    /** A set is [weight, reps]; anything else is skipped. */
+    /** A set is [weight, reps] or [weight, reps, feel]; anything else is skipped. */
     private static void readSet(JsonReader r, Session into) throws IOException {
         if (r.peek() != JsonToken.BEGIN_ARRAY) {
             r.skipValue();
@@ -310,6 +309,7 @@ final class Backup {
         r.beginArray();
         double w = -1;
         int reps = 0;
+        int feel = 0;
         int i = 0;
         while (r.hasNext()) {
             if (r.peek() != JsonToken.NUMBER) {
@@ -319,13 +319,16 @@ final class Backup {
             } else if (i == 1) {
                 double v = r.nextDouble();
                 reps = v == Math.rint(v) && v <= 1000 ? (int) v : 0;
+            } else if (i == 2) {
+                double v = r.nextDouble();
+                feel = v >= Coach.EASY && v <= Coach.HARD && v == Math.rint(v) ? (int) v : 0;
             } else {
                 r.skipValue();
             }
             i++;
         }
         r.endArray();
-        if (w >= 0 && w <= 2000 && reps > 0) into.add(w, reps);
+        if (w >= 0 && w <= 2000 && reps > 0) into.add(w, reps, feel);
     }
 
     private static void readPreset(JsonReader r, Map<String, Pre> presets) throws IOException {

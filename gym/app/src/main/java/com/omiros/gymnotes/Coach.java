@@ -15,13 +15,18 @@ import java.util.TreeSet;
  * reps until every working set reaches the top of the rep range, then add one weight step (the
  * smallest increment the person actually uses on that machine / dumbbell rack). On top of that:
  * <ul>
+ * <li>Per set, an optional rating of how many reps were left: {@link #EASY} (3+), {@link #NORMAL}
+ *     (1-2, also assumed when not rated), {@link #HARD} (0). Next time each set gets +2 reps after
+ *     easy, +1 after normal, the same after hard. The weight goes up when every work set reached
+ *     the top of the range, or would have with the reps it had left, and the reps expected at the
+ *     new weight come from what each set could have done.</li>
  * <li>Day-to-day form: each session is compared with the usual level of the sessions before it
- *     (estimated 1RM of the top set). A clearly weaker day ({@link #BAD_DAY}) never lowers the
- *     target: the previous target is simply tried again. A clearly stronger day ({@link #GOOD_DAY})
- *     never earns more than one step.</li>
+ *     (estimated 1RM of the top set). A clearly weaker day never lowers the target: the previous
+ *     target is simply tried again. A clearly stronger day never earns more than one step. What
+ *     "clearly" means is learned per exercise: the limits start at about −5% / +6% and follow how
+ *     much this person's results normally vary, as sessions accumulate ({@link #spread}).</li>
  * <li>No progress for {@link #STALL_SESSIONS} sessions at the same weight: go ~10% lighter and build
  *     back up. After a long break: start ~10% lighter; after a shorter one: repeat.</li>
- * <li>An optional effort rating (easy / normal / at the limit) speeds up or slows down the step.</li>
  * <li>Never more than {@link #MAX_JUMP} in one go; a weight step too big for the current reps
  *     (light dumbbells) is earned with extra reps first.</li>
  * </ul>
@@ -39,13 +44,21 @@ final class Coach {
     static final int[][] RANGES = {{1, 3}, {3, 5}, {4, 6}, {5, 8}, {6, 10}, {8, 12}, {10, 15}, {12, 15}, {15, 20}};
     static final double[] STEPS = {0.5, 1, 1.25, 2, 2.5, 5, 10};
 
-    /** Sessions looked at: recent form matters, and the cost stays the same after years. */
+    /** Sessions that decide the advice: recent form matters. */
     static final int RECENT = 8;
+    /**
+     * Sessions that teach the day-to-day spread. Callers load one more ({@link #LOAD}), so that the
+     * target given before the last session can be rebuilt from exactly what it was built from.
+     */
+    static final int HISTORY = 16;
+    static final int LOAD = HISTORY + 1;
     static final int BREAK_DAYS = 14;
     static final int LONG_BREAK_DAYS = 28;
     static final int STALL_SESSIONS = 4;
-    static final double BAD_DAY = 0.95;
-    static final double GOOD_DAY = 1.06;
+    /** Day-to-day spread assumed before there is data: a bad day at about −5%, a great one at +6%. */
+    static final double SPREAD_PRIOR = 0.033;
+    /** The assumed spread counts as this many observed sessions. */
+    static final int PRIOR_WEIGHT = 6;
     static final double MAX_JUMP = 0.10;
     static final double DELOAD = 0.10;
     /** Sets at least this share of the session's top weight are work sets; lighter ones are warm-ups. */
@@ -53,6 +66,11 @@ final class Coach {
     private static final int EXTRA_REPS = 4;
 
     private Coach() {
+    }
+
+    /** Reps to add to a set to read it like a normal one (1-2 left): easy +2, at the limit −1. */
+    static int extra(int feel) {
+        return feel == EASY ? 2 : feel == HARD ? -1 : 0;
     }
 
     /** Per-exercise choices; 0 means automatic. */
@@ -101,6 +119,14 @@ final class Coach {
         boolean autoStep;
         /** Last session's strength against the usual level (1.0 = usual), 0 if unknown. */
         double form;
+        /** -1 a weak day, 1 a great day, 0 otherwise or unknown. */
+        int dayKind;
+        /** Limits for a weak / great day, from {@link #spread}. */
+        double badLimit;
+        double goodLimit;
+        /** Typical day-to-day spread of this exercise (0.03 = ±3%) and how many sessions it was learned from. */
+        double spread;
+        int learned;
         /** How many sessions the advice looked at. */
         int sessions;
         String reason;
@@ -110,6 +136,7 @@ final class Coach {
     static final class Work {
         double top;
         int[] reps;
+        int[] feel;
         int sets;
     }
 
@@ -118,14 +145,19 @@ final class Coach {
         long top = 0;
         for (int i = 0; i < s.n; i++) top = Math.max(top, Strength.centi(s.weight[i]));
         int[] r = new int[s.n];
+        int[] f = new int[s.n];
         int count = 0;
         for (int i = 0; i < s.n; i++) {
             long c = Strength.centi(s.weight[i]);
-            if (c == top) r[count++] = s.reps[i];
+            if (c == top) {
+                f[count] = s.feel[i];
+                r[count++] = s.reps[i];
+            }
             if (c >= WORKING * top) w.sets++;
         }
         w.top = top / 100.0;
         w.reps = Arrays.copyOf(r, count);
+        w.feel = Arrays.copyOf(f, count);
         return w;
     }
 
@@ -139,14 +171,19 @@ final class Coach {
         return r <= 1 ? w : w * (1 + Math.min(r, 30) / 30.0);
     }
 
-    /** Strength shown in a session: estimated 1RM of the best work set, or max reps for bodyweight. */
+    /**
+     * Strength shown in a session: estimated 1RM of the best work set, or max reps for bodyweight.
+     * A set counts with the reps it could have done ({@link #extra}): someone who stops at the target
+     * only shows how strong the day was through the ratings.
+     */
     static double score(Session s) {
         Work w = work(s);
         double best = 0;
         for (int i = 0; i < s.n; i++) {
-            if (w.top <= 0) best = Math.max(best, s.reps[i]);
+            int could = Math.max(1, s.reps[i] + extra(s.feel[i]));
+            if (w.top <= 0) best = Math.max(best, could);
             else if (Strength.centi(s.weight[i]) >= WORKING * Strength.centi(w.top)) {
-                best = Math.max(best, estimate(s.weight[i], s.reps[i]));
+                best = Math.max(best, estimate(s.weight[i], could));
             }
         }
         return best;
@@ -235,32 +272,35 @@ final class Coach {
         return w > 0 && w >= t * 0.8 ? w / 100.0 : top;
     }
 
-    /** The heaviest weight on the step grid below {@code top} where the best set predicts {@code low} reps. */
-    private static double intoRange(Work w, int low, double step) {
-        int best = 0;
-        for (int r : w.reps) best = Math.max(best, r);
-        long t = Strength.centi(w.top);
+    /** The heaviest weight on the step grid below {@code top} where {@code best} reps there predict {@code low}. */
+    private static double intoRange(double top, int best, int low, double step) {
+        long t = Strength.centi(top);
         long st = Strength.centi(step);
         for (long c = t - st; c >= t / 2; c -= st) {
-            if (predict(w.top, best, c / 100.0) >= low) return c / 100.0;
+            if (predict(top, best, c / 100.0) >= low) return c / 100.0;
         }
-        return w.top;
+        return top;
     }
 
     // ---------------------------------------------------------------- advice
 
     /**
-     * What to do next time, from the sessions (oldest first; only the last {@link #RECENT} are used)
-     * for a session on day {@code today}. Null without history.
+     * What to do next time, from the sessions (oldest first, up to {@link #LOAD}) for a session on
+     * day {@code today}. The last {@link #RECENT} decide; those before the last one teach the
+     * day-to-day spread. Null without history.
      */
     static Advice next(List<Session> all, Settings settings, long today) {
         if (all.isEmpty()) return null;
-        List<Session> h = all.size() > RECENT ? all.subList(all.size() - RECENT, all.size()) : all;
-        long gap = Math.max(0, today - h.get(h.size() - 1).day);
-        return decide(h, settings, gap, true);
+        if (all.size() > LOAD) all = all.subList(all.size() - LOAD, all.size());
+        long gap = Math.max(0, today - all.get(all.size() - 1).day);
+        return decide(all, all.size(), settings, gap, true);
     }
 
-    private static Advice decide(List<Session> h, Settings settings, long gap, boolean judgeForm) {
+    /** The advice after session {@code end - 1} of {@code all}, from exactly what was known then. */
+    private static Advice decide(List<Session> all, int end, Settings settings, long gap, boolean judgeForm) {
+        List<Session> h = all.subList(Math.max(0, end - RECENT), end);
+        // Learned from the sessions before the last one: a weak day must not hide itself by widening the spread.
+        double[] spread = spread(all.subList(Math.max(0, end - HISTORY), end - 1));
         Session last = h.get(h.size() - 1);
         Work w = work(last);
         Advice a = new Advice();
@@ -287,12 +327,25 @@ final class Coach {
             a.step = inferStep(h, w.top);
             a.autoStep = true;
         }
-        a.form = form(h);
-        boolean good = a.form >= GOOD_DAY;
-        boolean bad = a.form > 0 && a.form <= BAD_DAY;
+        a.spread = spread[0];
+        a.learned = (int) spread[1];
+        a.badLimit = 1 - clamp(1.5 * a.spread, 0.03, 0.09);
+        a.goodLimit = 1 + clamp(1.75 * a.spread, 0.04, 0.10);
+        double[] f = form(h, a.low);
+        boolean easy = contains(w.feel, EASY);
+        boolean good = f[1] > 0 && f[1] >= a.goodLimit;
+        // Fewer reps on sets rated easy were a choice, not a weak day.
+        boolean bad = !good && f[0] > 0 && f[0] <= a.badLimit && !easy;
+        a.form = good ? f[1] : f[0];
+        a.dayKind = good ? 1 : bad ? -1 : 0;
         int sets = Math.max(1, w.sets);
         int[] base = extend(w.reps, sets);
-        boolean atTop = w.reps.length >= sets && min(w.reps) >= a.high;
+        // What each set could have done; on a great day only what it did, which is already above the usual.
+        int[] cap = good ? w.reps.clone() : capacities(w);
+        boolean atTop = w.reps.length >= sets;
+        for (int i = 0; i < w.reps.length; i++) {
+            if (w.reps[i] + Math.max(0, extra(w.feel[i])) < a.high) atTop = false;
+        }
 
         if (gap >= LONG_BREAK_DAYS && w.top > 0 && lighter(w.top, a.step) < w.top) {
             set(a, DOWN, lighter(w.top, a.step), base);
@@ -306,27 +359,19 @@ final class Coach {
                 a.reason = "Πέρασαν " + gap + " μέρες από την τελευταία φορά. Κάνε πρώτα ξανά τα ίδια και μετά ανεβαίνεις.";
                 return a;
             }
-            up(a, w, last.effort, good, sets);
+            up(a, w, cap, good, sets);
             return a;
         }
-        if (stalled(h)) {
-            double to = lighter(w.top, a.step);
-            if (to < w.top) {
-                Work first = work(h.get(h.size() - STALL_SESSIONS));
-                set(a, DOWN, to, base);
-                a.reason = STALL_SESSIONS + " φορές στα " + Fmt.kg(w.top) + " kg χωρίς πρόοδο (από "
-                        + reps(first.reps) + " σε " + reps(w.reps) + " reps). Κατέβα στα " + Fmt.kg(to) + " kg (−"
-                        + Math.round((1 - to / w.top) * 100) + "%) για 1–2 φορές και ξαναχτίσε· "
-                        + "έτσι ξεκολλάς συνήθως.";
-                return a;
-            }
-        }
-        if (bad && judgeForm && h.size() >= 2) {
-            // A weak day: give again the target that was set for it.
-            Advice before = decide(h.subList(0, h.size() - 1), settings, gap, false);
+        if (bad && judgeForm && end >= 2) {
+            // A weak day: give again the target that was set for it. Checked before a stall, so one
+            // odd day is never read as stagnation nor becomes the base of the next target.
+            // The target as it was for that day: with the gap that came before it (a break counts).
+            Advice before = decide(all, end - 1, settings, last.day - all.get(end - 2).day, false);
             before.form = a.form;
+            before.dayKind = -1;
             before.sessions = a.sessions;
-            if (before.kind == DOWN) return before;   // it was already time to go lighter
+            // It was already time to go lighter: that advice stands, unless this was that lighter session.
+            if (before.kind == DOWN && Strength.centi(before.weight) != Strength.centi(w.top)) return before;
             before.kind = SAME;
             long drop = Math.round((1 - a.form) * 100);
             if (Strength.centi(before.weight) < Strength.centi(w.top)) {
@@ -339,16 +384,27 @@ final class Coach {
             }
             return before;
         }
-        int bestReps = 0;
-        for (int r : w.reps) bestReps = Math.max(bestReps, r);
-        if (w.top > 0 && bestReps < a.low - 1) {
+        if (!easy && stalled(h)) {
+            double to = lighter(w.top, a.step);
+            if (to < w.top) {
+                Work first = work(h.get(h.size() - STALL_SESSIONS));
+                set(a, DOWN, to, base);
+                a.reason = STALL_SESSIONS + " φορές στα " + Fmt.kg(w.top) + " kg χωρίς πρόοδο (από "
+                        + reps(first.reps) + " σε " + reps(w.reps) + " reps). Κατέβα στα " + Fmt.kg(to) + " kg (−"
+                        + Math.round((1 - to / w.top) * 100) + "%) για 1–2 φορές και ξαναχτίσε· "
+                        + "έτσι ξεκολλάς συνήθως.";
+                return a;
+            }
+        }
+        int bestCap = max(cap);
+        if (w.top > 0 && bestCap < a.low - 1) {
             // Strength was normal, but the weight is too heavy for the rep range: back into it.
-            double to = intoRange(w, a.low, a.step);
+            double to = intoRange(w.top, bestCap, a.low, a.step);
             if (to < w.top) {
                 int[] r = new int[sets];
-                for (int i = 0; i < sets; i++) r[i] = Math.min(a.high, predict(w.top, base[i], to));
+                for (int i = 0; i < sets; i++) r[i] = Math.min(a.high, predict(w.top, i < cap.length ? cap[i] : cap[cap.length - 1], to));
                 set(a, DOWN, to, r);
-                a.reason = "Με τα " + Fmt.kg(w.top) + " kg έκανες " + bestReps + " reps, κάτω από το εύρος σου ("
+                a.reason = "Με τα " + Fmt.kg(w.top) + " kg έκανες " + max(w.reps) + " reps, κάτω από το εύρος σου ("
                         + rangeLabel(a.low, a.high) + "). Πήγαινε στα " + Fmt.kg(to) + " kg για περίπου " + r[0]
                         + " reps και ανέβαινε από εκεί.";
                 return a;
@@ -359,12 +415,12 @@ final class Coach {
             a.reason = "Πέρασαν " + gap + " μέρες από την τελευταία φορά. Κάνε πρώτα ξανά τα ίδια.";
             return a;
         }
-        moreReps(a, w, last.effort, good, sets);
+        moreReps(a, w, good, sets);
         return a;
     }
 
-    /** Every work set reached the top of the range: add weight. */
-    private static void up(Advice a, Work w, int effort, boolean good, int sets) {
+    /** Every work set reached the top of the range (or would have): add weight. */
+    private static void up(Advice a, Work w, int[] cap, boolean good, int sets) {
         if (w.top <= 0) {
             int[] r = new int[sets];
             Arrays.fill(r, a.low);
@@ -373,13 +429,14 @@ final class Coach {
                     + Fmt.kg(a.step) + " kg (ζώνη ή αλτήρα) ή πήγαινε σε πιο δύσκολη παραλλαγή.";
             return;
         }
-        boolean wayOver = min(w.reps) >= a.high + 3;
-        int steps = (wayOver || effort == EASY) && !good ? 2 : 1;
-        while (steps > 1 && (steps * a.step > w.top * MAX_JUMP + 1e-9 || min(predictAll(w, steps * a.step)) < a.low)) {
+        boolean wayOver = min(cap) >= a.high + 2;
+        int steps = wayOver && !good ? 2 : 1;
+        while (steps > 1 && (steps * a.step > w.top * MAX_JUMP + 1e-9
+                || min(predictAll(w.top, cap, steps * a.step)) < a.low)) {
             steps--;
         }
         double to = w.top + steps * a.step;
-        int[] r = predictAll(w, steps * a.step);
+        int[] r = predictAll(w.top, cap, steps * a.step);
         if (steps == 1 && min(r) < a.low - 1 && min(w.reps) < a.high + EXTRA_REPS) {
             // The next weight is a big jump for these reps (light dumbbells): earn it with extra reps first.
             int[] more = new int[sets];
@@ -397,79 +454,159 @@ final class Coach {
             sb.append("Πολύ καλή μέρα (+").append(Math.round((a.form - 1) * 100))
                     .append("% από τα συνηθισμένα σου), οπότε ανεβαίνεις ένα βήμα, όχι παραπάνω. ");
         }
-        sb.append("Έπιασες τα ").append(a.high).append(" reps σε όλα τα sets με ").append(Fmt.kg(w.top))
-                .append(" kg");
-        if (steps == 2) sb.append(effort == EASY ? " και σου φάνηκε εύκολο" : ", πολύ πάνω από το εύρος σου");
+        if (min(w.reps) >= a.high) {
+            sb.append("Έπιασες τα ").append(a.high).append(" reps σε όλα τα sets με ").append(Fmt.kg(w.top)).append(" kg");
+        } else {
+            sb.append("Με όσα reps σου περίσσευαν, θα έπιανες τα ").append(a.high).append(" σε όλα τα sets με ")
+                    .append(Fmt.kg(w.top)).append(" kg");
+        }
+        if (steps == 2) sb.append(contains(w.feel, EASY) ? " και ήταν χαλαρά" : ", πολύ πάνω από το εύρος σου");
         sb.append(": ανέβα ").append(Fmt.kg(steps * a.step)).append(" kg. Τα reps θα πέσουν λίγο· τα ξαναχτίζεις ως τα ")
                 .append(a.high).append('.');
         a.reason = sb.toString();
     }
 
-    /** Below the top of the range: same weight, more reps. */
-    private static void moreReps(Advice a, Work w, int effort, boolean good, int sets) {
+    /** Below the top of the range: same weight, more reps, set by set. */
+    private static void moreReps(Advice a, Work w, boolean good, int sets) {
         int[] r = extend(w.reps, sets);
         int done = w.reps.length;
         String with = w.top > 0 ? "με " + Fmt.kg(w.top) + " kg" : "με το σωματικό σου βάρος";
-        // Sets that were lighter last time move up to the top weight as they were: no extra reps for them.
-        String moveUp = done < sets ? "Κάνε και τα " + sets + " sets " + with + ". " : "";
-        String how;
-        if (effort == HARD) {
-            // At the limit: hold, and add one rep only to the weakest set.
+        String stay = w.top > 0 ? "στα " + Fmt.kg(w.top) + " kg" : "με το σωματικό σου βάρος";
+        int[] add = new int[done];
+        boolean rated = false;
+        for (int i = 0; i < done; i++) {
+            // Easy +2, normal (or not rated) +1, at the limit +0; a great day already was the +1.
+            add[i] = clamp(1 + extra(w.feel[i]), 0, 2);
+            if (good) add[i] = Math.max(0, add[i] - 1);
+            int target = Math.max(r[i], Math.min(a.high, r[i] + add[i]));
+            add[i] = target - r[i];
+            r[i] = target;
+            rated |= w.feel[i] != 0;
+        }
+        boolean pushed = false;
+        boolean limitBelowTop = false;
+        boolean allLimit = true;
+        for (int i = 0; i < done; i++) {
+            if (r[i] < a.high) limitBelowTop |= w.feel[i] == HARD;
+            if (r[i] < a.high && w.feel[i] != HARD) allLimit = false;
+        }
+        if (!good && max(add) == 0 && limitBelowTop && allLimit) {
+            // Every set short of the top was at the limit: keep them, and add one rep only to the weakest.
             int weakest = -1;
             for (int i = 0; i < done; i++) {
                 if (r[i] < a.high && (weakest < 0 || r[i] < r[weakest])) weakest = i;
             }
-            if (weakest >= 0) r[weakest]++;
-            how = moveUp + "Ήταν στο όριο, οπότε κράτα τα ίδια και βάλε +1 rep μόνο στο πιο αδύναμο set.";
-        } else if (good) {
-            // Numbers above the usual level: make them the new normal before asking for more.
-            how = moveUp + "Κράτα τα ίδια και ξαναπιάσε αυτά τα νούμερα· μετά συνεχίζεις με +1 rep.";
-        } else {
-            int add = effort == EASY ? 2 : 1;
-            for (int i = 0; i < done; i++) r[i] = Math.min(a.high, r[i] + add);
-            String plus = "+" + add + (add == 1 ? " rep" : " reps");
-            String easy = effort == EASY ? " (σου φάνηκε εύκολο)" : "";
-            how = done < sets
-                    ? "Κάνε και τα " + sets + " sets " + with + ", με " + plus + " σε όσα έκανες ήδη " + with + easy + "."
-                    : "Μείνε " + (w.top > 0 ? "στα " + Fmt.kg(w.top) + " kg" : "με το σωματικό σου βάρος") + " και βάλε "
-                    + plus + " σε κάθε set" + easy + ".";
+            if (weakest >= 0) {
+                r[weakest]++;
+                add[weakest] = 1;
+                pushed = true;
+            }
         }
         set(a, MORE_REPS, w.top, r);
+
         StringBuilder sb = new StringBuilder();
         if (good) {
             sb.append("Πολύ καλή μέρα (+").append(Math.round((a.form - 1) * 100)).append("% από τα συνηθισμένα σου). ");
         }
-        sb.append(how).append(" Όταν πιάσεις τα ").append(a.high).append(" σε όλα, ");
+        boolean same = true;
+        for (int i = 1; i < done; i++) same &= add[i] == add[0] && w.feel[i] == w.feel[0];
+        if (pushed) {
+            if (done < sets) sb.append("Κάνε και τα ").append(sets).append(" sets ").append(with).append(". ");
+            boolean everySet = true;
+            for (int i = 0; i < done; i++) everySet &= w.feel[i] == HARD;
+            sb.append(done == 1 ? "Ήταν στο όριο" : everySet ? "Όλα ήταν στο όριο" : "Όσα έμειναν κάτω από τα " + a.high
+                    + " ήταν στο όριο").append(": κράτα τα ίδια και βάλε +1 rep μόνο στο πιο αδύναμο set.");
+        } else if (max(add) == 0) {
+            if (done < sets) sb.append("Κάνε και τα ").append(sets).append(" sets ").append(with).append(". ");
+            sb.append(good ? "Κράτα τα ίδια και ξαναπιάσε αυτά τα νούμερα· μετά συνεχίζεις με +1 rep." : "Κράτα τα ίδια.");
+        } else if (same) {
+            String plus = "+" + add[0] + (add[0] == 1 ? " rep" : " reps");
+            String why = rated ? " (" + (done == 1 ? "ήταν " : "ήταν όλα ") + Fmt.feel(w.feel[0]) + ")" : "";
+            sb.append(done < sets
+                    ? "Κάνε και τα " + sets + " sets " + with + ", με " + plus + " σε όσα έκανες ήδη " + with + why + "."
+                    : "Μείνε " + stay + " και βάλε " + plus + " σε κάθε set" + why + ".");
+        } else {
+            // Said by how the sets felt, not by number: the numbers of last time and of the target differ.
+            if (done < sets) sb.append("Κάνε και τα ").append(sets).append(" sets ").append(with).append(". ");
+            sb.append("Μείνε ").append(stay).append(": ");
+            String[] groups = {"στα χαλαρά sets", "στα μέτρια", "στα «στο όριο»", "σε όσα δεν βαθμολόγησες"};
+            int[] order = {EASY, NORMAL, HARD, 0};
+            boolean first = true;
+            boolean capped = false;
+            for (int g = 0; g < order.length; g++) {
+                boolean present = false;
+                for (int i = 0; i < done; i++) present |= w.feel[i] == order[g];
+                if (!present) continue;
+                int nominal = clamp(1 + extra(order[g]), 0, 2);
+                if (good) nominal = Math.max(0, nominal - 1);
+                for (int i = 0; i < done; i++) capped |= w.feel[i] == order[g] && add[i] < nominal;
+                sb.append(first ? "" : ", ").append(nominal > 0 ? "+" + nominal + (first ? (nominal == 1 ? " rep " : " reps ") : " ") : "ίδια ")
+                        .append(groups[g]);
+                first = false;
+            }
+            if (capped) sb.append(" (ως τα ").append(a.high).append(")");
+            sb.append('.');
+        }
+        sb.append(" Όταν πιάσεις τα ").append(a.high).append(" σε όλα, ");
         sb.append(w.top > 0 ? "ανεβαίνεις " + Fmt.kg(a.step) + " kg." : "προσθέτεις βάρος.");
         a.reason = sb.toString();
     }
 
+    static double[] form(List<Session> h) {
+        return form(h, 0);
+    }
+
     /**
-     * Last session against the usual level: its score over the median of up to 3 sessions before
-     * it (over their best for a good day, so steady progress is not mistaken for luck). 0 when
-     * unknown, or when the last session was lighter on purpose (a deload is not a weak day).
+     * Last session against the usual level: {its score over the median of up to 3 sessions before
+     * it, over their best}. The second is for a great day, so steady progress is not mistaken for
+     * luck. Zeros when unknown, or when the last session was lighter on purpose (a deload is not a
+     * weak day) unless even that went far below the rep range ({@code low}).
      */
-    static double form(List<Session> h) {
+    static double[] form(List<Session> h, int low) {
         int n = h.size();
-        if (n < 3) return 0;
+        double[] none = {0, 0};
+        if (n < 3) return none;
         Session last = h.get(n - 1);
         Work lw = work(last);
-        if (Strength.centi(lw.top) < Strength.centi(work(h.get(n - 2)).top)) return 0;
+        if (Strength.centi(lw.top) < Strength.centi(work(h.get(n - 2)).top)) {
+            int could = 0;
+            for (int i = 0; i < lw.reps.length; i++) could = Math.max(could, lw.reps[i] + extra(lw.feel[i]));
+            if (low <= 0 || could >= low - 1) return none;
+        }
         List<Double> prev = new ArrayList<>();
         for (int k = n - 2; k >= 0 && prev.size() < 3; k--) {
             Session s = h.get(k);
             if ((work(s).top > 0) == (lw.top > 0)) prev.add(score(s));
         }
-        if (prev.size() < 2) return 0;
+        if (prev.size() < 2) return none;
+        Collections.sort(prev);
+        double median = prev.get(prev.size() / 2);
+        double best = prev.get(prev.size() - 1);
+        if (median <= 0) return none;
         double now = score(last);
-        List<Double> sorted = new ArrayList<>(prev);
-        Collections.sort(sorted);
-        double median = sorted.get(sorted.size() / 2);
-        double best = sorted.get(sorted.size() - 1);
-        if (median <= 0) return 0;
-        if (now >= best * GOOD_DAY) return now / best;
-        double r = now / median;
-        return r <= BAD_DAY ? r : Math.min(r, GOOD_DAY - 0.001);
+        return new double[]{now / median, now / best};
+    }
+
+    /**
+     * How much this person's results in this exercise normally move from one session to the next:
+     * {spread, sessions learned from}. Each session's form (against the median before it) is a
+     * sample; the spread is their robust deviation (MAD, so a few odd days do not count much),
+     * blended with {@link #SPREAD_PRIOR} as if that were {@link #PRIOR_WEIGHT} sessions. With 5
+     * sessions the prior still dominates; with 10-16 the person's own spread does.
+     */
+    static double[] spread(List<Session> all) {
+        List<Double> samples = new ArrayList<>();
+        for (int k = 2; k < all.size(); k++) {
+            double f = form(all.subList(0, k + 1))[0];
+            if (f > 0) samples.add(f - 1);
+        }
+        int n = samples.size();
+        if (n == 0) return new double[]{SPREAD_PRIOR, 0};
+        double med = median(samples);
+        List<Double> dev = new ArrayList<>();
+        for (double x : samples) dev.add(Math.abs(x - med));
+        double own = clamp(1.4826 * median(dev), 0.005, 0.12);
+        return new double[]{(n * own + PRIOR_WEIGHT * SPREAD_PRIOR) / (n + PRIOR_WEIGHT), n};
     }
 
     /**
@@ -497,10 +634,45 @@ final class Coach {
 
     // ---------------------------------------------------------------- helpers
 
-    private static int[] predictAll(Work w, double add) {
-        int[] r = new int[w.reps.length];
-        for (int i = 0; i < r.length; i++) r[i] = predict(w.top, w.reps[i], w.top + add);
+    /** What each set could have done: its reps read with the reps it had left. */
+    private static int[] capacities(Work w) {
+        int[] c = new int[w.reps.length];
+        for (int i = 0; i < c.length; i++) c[i] = Math.max(1, w.reps[i] + extra(w.feel[i]));
+        return c;
+    }
+
+    private static int[] predictAll(double top, int[] cap, double add) {
+        int[] r = new int[cap.length];
+        for (int i = 0; i < r.length; i++) r[i] = predict(top, cap[i], top + add);
         return r;
+    }
+
+    private static boolean contains(int[] a, int v) {
+        for (int x : a) {
+            if (x == v) return true;
+        }
+        return false;
+    }
+
+    private static int max(int[] r) {
+        int m = 0;
+        for (int x : r) m = Math.max(m, x);
+        return m;
+    }
+
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static double median(List<Double> v) {
+        List<Double> s = new ArrayList<>(v);
+        Collections.sort(s);
+        int n = s.size();
+        return n % 2 == 1 ? s.get(n / 2) : (s.get(n / 2 - 1) + s.get(n / 2)) / 2;
     }
 
     /** Reps per work set: the ones done with the top weight, padded with the last of them. */

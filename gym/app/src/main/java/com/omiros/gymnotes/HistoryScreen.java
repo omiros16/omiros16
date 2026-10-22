@@ -4,6 +4,9 @@ import static com.omiros.gymnotes.Theme.*;
 
 import android.content.res.ColorStateList;
 import android.graphics.drawable.ColorDrawable;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -191,6 +194,9 @@ final class HistoryScreen extends Screen {
         if (next != null) {
             statRow(h.get(h.size() - 1).day == today ? "Επόμενη φορά" : "Στόχος", Fmt.target(next),
                     Fmt.arrow(next.kind) + " " + Fmt.kind(next.kind));
+            // What the coach has learned about this person's day-to-day spread in this exercise.
+            statRow("Διακύμανση μέρας", "±" + Fmt.num1(next.spread * 100) + "%",
+                    next.learned >= 3 ? "από τις " + next.learned + " τελευταίες προπονήσεις σου" : "αρχική εκτίμηση");
         }
         if (b.bestE1rm > 0) {
             statRow("Ρεκόρ ≈1RM", Fmt.num1(b.bestE1rm) + " kg", Fmt.kg(b.bestE1rmWeight) + " × " + b.bestE1rmReps
@@ -319,6 +325,9 @@ final class HistoryScreen extends Screen {
                 h.sets = ui.text(15, SOFT, false);
                 h.sets.setPadding(0, ui.dp(3), 0, 0);
                 card.addView(h.sets);
+                h.feel = ui.text(13, DIM, false);
+                h.feel.setPadding(0, ui.dp(2), 0, 0);
+                card.addView(h.feel);
                 h.pr = ui.text(12, GOLD, true);
                 h.pr.setPadding(0, ui.dp(4), 0, 0);
                 card.addView(h.pr);
@@ -331,19 +340,34 @@ final class HistoryScreen extends Screen {
             Session s = sessions.get(position);
             h.date.setText(Fmt.day(s.day, Fmt.today()));
             double e = s.bestE1rm();
-            h.score.setText((e > 0 ? "≈1RM " + Fmt.num1(e) + " kg" : "max " + s.maxReps() + " reps")
-                    + (s.effort > 0 ? "  ·  " + Fmt.effort(s.effort) : ""));
+            h.score.setText(e > 0 ? "≈1RM " + Fmt.num1(e) + " kg" : "max " + s.maxReps() + " reps");
             h.sets.setText(Fmt.sets(s));
+            h.feel.setText(feelLine(s));
+            h.feel.setVisibility(s.rated() ? View.VISIBLE : View.GONE);
             h.pr.setText("🏆 " + Fmt.badges(s.flags));
             h.pr.setVisibility(s.flags != 0 ? View.VISIBLE : View.GONE);
             return convertView;
         }
     }
 
+    /** "χαλαρό, μέτριο, στο όριο", each word in its colour; a dash for a set that was not rated. */
+    private static CharSequence feelLine(Session s) {
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        for (int i = 0; i < s.n; i++) {
+            if (i > 0) sb.append(", ");
+            String word = s.feel[i] != 0 ? Fmt.feel(s.feel[i]) : "–";
+            int start = sb.length();
+            sb.append(word);
+            sb.setSpan(new ForegroundColorSpan(Theme.feel(s.feel[i])), start, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return sb;
+    }
+
     private static final class Holder {
         TextView date;
         TextView score;
         TextView sets;
+        TextView feel;
         TextView pr;
     }
 }

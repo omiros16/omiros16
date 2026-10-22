@@ -123,8 +123,19 @@ final class Fmt {
         }
     }
 
-    static String effort(int e) {
-        return e == Coach.EASY ? "εύκολο" : e == Coach.NORMAL ? "κανονικό" : e == Coach.HARD ? "στο όριο" : "";
+    /** How a set felt, as a word inside a sentence: "χαλαρό", "μέτριο", "στο όριο". */
+    static String feel(int f) {
+        return f == Coach.EASY ? "χαλαρό" : f == Coach.NORMAL ? "μέτριο" : f == Coach.HARD ? "στο όριο" : "";
+    }
+
+    /** The same as a button label. */
+    static String feelTitle(int f) {
+        return f == Coach.EASY ? "Χαλαρό" : f == Coach.NORMAL ? "Μέτριο" : f == Coach.HARD ? "Στο όριο" : "";
+    }
+
+    /** What the rating means, in reps that were left. */
+    static String feelHint(int f) {
+        return f == Coach.EASY ? "έμεναν 3+" : f == Coach.NORMAL ? "έμεναν 1–2" : f == Coach.HARD ? "έμενε 0" : "";
     }
 
     /** Short badge text, e.g. "PR βάρους · PR 1RM". */

@@ -53,7 +53,7 @@ final class Db extends SQLiteOpenHelper {
             "e.id, e.name, e.last_day, e.sessions, e.best_e1rm, e.max_weight, e.last_pr";
 
     Db(Context context) {
-        super(context, "gym.db", null, 2);
+        super(context, "gym.db", null, 3);
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -79,13 +79,13 @@ final class Db extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE log_set ("
                 + " exercise_id INTEGER NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,"
                 + " day INTEGER NOT NULL, idx INTEGER NOT NULL, weight REAL NOT NULL, reps INTEGER NOT NULL,"
-                + " PRIMARY KEY (exercise_id, day, idx)) WITHOUT ROWID");
-        createNotes(db);
+                + " feel INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (exercise_id, day, idx)) WITHOUT ROWID");
     }
 
     /**
-     * Version 2: per-exercise progression settings (0 = automatic), the automatic choices cached
-     * like the other stats, and the optional effort rating.
+     * Version 2: per-exercise progression settings (0 = automatic) and the automatic choices cached
+     * like the other stats. Version 3: how each set felt ({@code log_set.feel}), replacing the one
+     * rating per exercise and day of version 2 ({@code log_note}).
      */
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
@@ -96,19 +96,25 @@ final class Db extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE exercise ADD COLUMN auto_low INTEGER NOT NULL DEFAULT 0");
             db.execSQL("ALTER TABLE exercise ADD COLUMN auto_high INTEGER NOT NULL DEFAULT 0");
             db.execSQL("ALTER TABLE exercise ADD COLUMN auto_step REAL NOT NULL DEFAULT 0");
-            createNotes(db);
-            List<Long> ids = new ArrayList<>();
-            try (Cursor c = db.rawQuery("SELECT id FROM exercise", null)) {
-                while (c.moveToNext()) ids.add(c.getLong(0));
-            }
-            for (long id : ids) refreshStats(db, id);
         }
-    }
-
-    private static void createNotes(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE log_note ("
-                + " exercise_id INTEGER NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,"
-                + " day INTEGER NOT NULL, effort INTEGER NOT NULL, PRIMARY KEY (exercise_id, day)) WITHOUT ROWID");
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE log_set ADD COLUMN feel INTEGER NOT NULL DEFAULT 0");
+            if (oldVersion == 2) {
+                // A day rated easy / normal: every set of it; a day at the limit: its last set.
+                db.execSQL("UPDATE log_set SET feel = (SELECT n.effort FROM log_note n WHERE n.exercise_id = log_set.exercise_id"
+                        + " AND n.day = log_set.day) WHERE EXISTS (SELECT 1 FROM log_note n WHERE n.exercise_id ="
+                        + " log_set.exercise_id AND n.day = log_set.day AND n.effort IN (1, 2))");
+                db.execSQL("UPDATE log_set SET feel = 3 WHERE EXISTS (SELECT 1 FROM log_note n WHERE n.exercise_id ="
+                        + " log_set.exercise_id AND n.day = log_set.day AND n.effort = 3) AND idx = (SELECT MAX(s.idx)"
+                        + " FROM log_set s WHERE s.exercise_id = log_set.exercise_id AND s.day = log_set.day)");
+                db.execSQL("DROP TABLE log_note");
+            }
+        }
+        List<Long> ids = new ArrayList<>();
+        try (Cursor c = db.rawQuery("SELECT id FROM exercise", null)) {
+            while (c.moveToNext()) ids.add(c.getLong(0));
+        }
+        for (long id : ids) refreshStats(db, id);
     }
 
     private SQLiteDatabase rd() {
@@ -399,9 +405,9 @@ final class Db extends SQLiteOpenHelper {
     /** The sets logged for an exercise on a day (empty if none). */
     Session session(long exerciseId, long day) {
         Session s = new Session(day);
-        try (Cursor c = rd().rawQuery("SELECT weight, reps FROM log_set WHERE exercise_id = ? AND day = ?"
+        try (Cursor c = rd().rawQuery("SELECT weight, reps, feel FROM log_set WHERE exercise_id = ? AND day = ?"
                 + " ORDER BY idx", args(exerciseId, day))) {
-            while (c.moveToNext()) s.add(c.getDouble(0), c.getInt(1));
+            while (c.moveToNext()) s.add(c.getDouble(0), c.getInt(1), c.getInt(2));
         }
         return s;
     }
@@ -424,14 +430,12 @@ final class Db extends SQLiteOpenHelper {
         return b;
     }
 
-    /** Every session of an exercise, oldest first, with its effort rating. */
+    /** Every session of an exercise, oldest first. */
     List<Session> history(long exerciseId) {
-        List<Session> h = history(rd(), exerciseId);
-        attachEfforts(exerciseId, h);
-        return h;
+        return history(rd(), exerciseId);
     }
 
-    /** The last {@code limit} sessions before {@code beforeDay}, oldest first, with effort ratings. */
+    /** The last {@code limit} sessions before {@code beforeDay}, oldest first. */
     List<Session> recent(long exerciseId, long beforeDay, int limit) {
         List<Session> out = new ArrayList<>();
         long from;
@@ -441,7 +445,7 @@ final class Db extends SQLiteOpenHelper {
             from = c.getLong(0);
         }
         Session cur = null;
-        try (Cursor c = rd().rawQuery("SELECT day, weight, reps FROM log_set WHERE exercise_id = ? AND day >= ?"
+        try (Cursor c = rd().rawQuery("SELECT day, weight, reps, feel FROM log_set WHERE exercise_id = ? AND day >= ?"
                 + " AND day < ? ORDER BY day, idx", args(exerciseId, from, beforeDay))) {
             while (c.moveToNext()) {
                 long day = c.getLong(0);
@@ -449,29 +453,15 @@ final class Db extends SQLiteOpenHelper {
                     cur = new Session(day);
                     out.add(cur);
                 }
-                cur.add(c.getDouble(1), c.getInt(2));
+                cur.add(c.getDouble(1), c.getInt(2), c.getInt(3));
             }
         }
-        attachEfforts(exerciseId, out);
         return out;
-    }
-
-    private void attachEfforts(long exerciseId, List<Session> sessions) {
-        if (sessions.isEmpty()) return;
-        Map<Long, Integer> efforts = new HashMap<>();
-        try (Cursor c = rd().rawQuery("SELECT day, effort FROM log_note WHERE exercise_id = ? AND day BETWEEN ? AND ?",
-                args(exerciseId, sessions.get(0).day, sessions.get(sessions.size() - 1).day))) {
-            while (c.moveToNext()) efforts.put(c.getLong(0), c.getInt(1));
-        }
-        for (Session s : sessions) {
-            Integer e = efforts.get(s.day);
-            s.effort = e == null ? 0 : e;
-        }
     }
 
     /** Advice for a session of this exercise on {@code day}, from the sessions before it (null without any). */
     Coach.Advice advice(long exerciseId, long day) {
-        return Coach.next(recent(exerciseId, day, Coach.RECENT), coachSettings(exerciseId), day);
+        return Coach.next(recent(exerciseId, day, Coach.LOAD), coachSettings(exerciseId), day);
     }
 
     /** The exercise's settings plus the cached automatic choices (see {@link #refreshStats}). */
@@ -528,34 +518,10 @@ final class Db extends SQLiteOpenHelper {
         db.update("exercise", v, "id = ?", args(exerciseId));
     }
 
-    /** How hard a day felt, 0 if not rated. */
-    int effort(long exerciseId, long day) {
-        try (Cursor c = rd().rawQuery("SELECT effort FROM log_note WHERE exercise_id = ? AND day = ?",
-                args(exerciseId, day))) {
-            return c.moveToFirst() ? c.getInt(0) : 0;
-        }
-    }
-
-    void setEffort(long exerciseId, long day, int effort) {
-        setEffort(wr(), exerciseId, day, effort);
-    }
-
-    private static void setEffort(SQLiteDatabase db, long exerciseId, long day, int effort) {
-        if (effort <= 0) {
-            db.delete("log_note", "exercise_id = ? AND day = ?", args(exerciseId, day));
-            return;
-        }
-        ContentValues v = new ContentValues();
-        v.put("exercise_id", exerciseId);
-        v.put("day", day);
-        v.put("effort", effort);
-        db.insertWithOnConflict("log_note", null, v, SQLiteDatabase.CONFLICT_REPLACE);
-    }
-
     private static List<Session> history(SQLiteDatabase db, long exerciseId) {
         List<Session> out = new ArrayList<>();
         Session cur = null;
-        try (Cursor c = db.rawQuery("SELECT day, weight, reps FROM log_set WHERE exercise_id = ?"
+        try (Cursor c = db.rawQuery("SELECT day, weight, reps, feel FROM log_set WHERE exercise_id = ?"
                 + " ORDER BY day, idx", args(exerciseId))) {
             while (c.moveToNext()) {
                 long day = c.getLong(0);
@@ -563,7 +529,7 @@ final class Db extends SQLiteOpenHelper {
                     cur = new Session(day);
                     out.add(cur);
                 }
-                cur.add(c.getDouble(1), c.getInt(2));
+                cur.add(c.getDouble(1), c.getInt(2), c.getInt(3));
             }
         }
         return out;
@@ -588,17 +554,12 @@ final class Db extends SQLiteOpenHelper {
     }
 
     private static SQLiteStatement insertSet(SQLiteDatabase db) {
-        return db.compileStatement("INSERT INTO log_set (exercise_id, day, idx, weight, reps) VALUES (?, ?, ?, ?, ?)");
+        return db.compileStatement("INSERT INTO log_set (exercise_id, day, idx, weight, reps, feel) VALUES (?, ?, ?, ?, ?, ?)");
     }
 
     private static void replaceSession(SQLiteDatabase db, SQLiteStatement ins, long exerciseId, Session s) {
         db.delete("log_set", "exercise_id = ? AND day = ?", args(exerciseId, s.day));
         int idx = 0;
-        for (int i = 0; i < s.n; i++) {
-            if (s.reps[i] > 0 && s.weight[i] >= 0) idx++;
-        }
-        if (idx == 0) setEffort(db, exerciseId, s.day, 0);
-        idx = 0;
         for (int i = 0; i < s.n; i++) {
             if (s.reps[i] <= 0 || s.weight[i] < 0) continue;
             ins.bindLong(1, exerciseId);
@@ -606,6 +567,7 @@ final class Db extends SQLiteOpenHelper {
             ins.bindLong(3, idx++);
             ins.bindDouble(4, Strength.centi(s.weight[i]) / 100.0);
             ins.bindLong(5, s.reps[i]);
+            ins.bindLong(6, s.feel[i]);
             ins.executeInsert();
         }
     }
@@ -635,14 +597,9 @@ final class Db extends SQLiteOpenHelper {
         return rd().rawQuery("SELECT id, name, rep_low, rep_high, step FROM exercise ORDER BY id", null);
     }
 
-    /** Effort ratings in table order: exercise_id, day, effort. */
-    Cursor exportNotes() {
-        return rd().rawQuery("SELECT exercise_id, day, effort FROM log_note ORDER BY exercise_id, day", null);
-    }
-
-    /** Every logged set in table order: exercise_id, day, weight, reps. */
+    /** Every logged set in table order: exercise_id, day, weight, reps, feel. */
     Cursor exportSets() {
-        return rd().rawQuery("SELECT exercise_id, day, weight, reps FROM log_set ORDER BY exercise_id, day, idx", null);
+        return rd().rawQuery("SELECT exercise_id, day, weight, reps, feel FROM log_set ORDER BY exercise_id, day, idx", null);
     }
 
     /** Preset rows in display order: id, name. */
@@ -690,10 +647,7 @@ final class Db extends SQLiteOpenHelper {
                 long id = addExercise(db, ex.name);
                 ids.put(key(ex.name), id);
                 if (ex.low > 0 || ex.step > 0) setSettings(db, id, ex.low, ex.high, ex.step);
-                for (Session s : ex.log) {
-                    replaceSession(db, ins, id, s);
-                    setEffort(db, id, s.day, s.effort);
-                }
+                for (Session s : ex.log) replaceSession(db, ins, id, s);
                 refreshStats(db, id);
                 r.exercises++;
                 r.sessions += ex.log.size();

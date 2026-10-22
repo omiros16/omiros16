@@ -29,12 +29,12 @@ import java.util.List;
 /**
  * Logging one exercise on one day. Rows start with the day's target ({@link Coach}: last time's
  * warm-ups, then the suggested work sets); tap ✓ on each set when it is done and it is saved at
- * once (later edits to a ticked set save too). Every ticked set is judged against the whole history
- * for real PRs, see {@link Strength}. Once every set is ticked, the target for next time is shown.
+ * once (later edits to a ticked set save too). A ticked set asks how it felt (optional), which the
+ * next target is built from. Every ticked set is judged against the whole history for real PRs,
+ * see {@link Strength}. Once every set is ticked, the target for next time is shown.
  */
 final class ExerciseScreen extends Screen {
     private static final int SAVE_DELAY_MS = 500;
-    private static final String[] EFFORTS = {"Εύκολο", "Κανονικό", "Στο όριο"};
 
     private final long exerciseId;
     private long day;
@@ -48,15 +48,15 @@ final class ExerciseScreen extends Screen {
     private ScrollView scroll;
     private TextView dateChip;
     private TextView prevTitle;
-    private TextView prevSets;
+    private TextView prevDate;
+    private LinearLayout prevTable;
+    private View prevRule;
     private TextView records;
     private TextView banner;
     private LinearLayout rowsBox;
     private TextView summary;
     private AdviceView adviceView;
     private AdviceView nextView;
-    private LinearLayout effortRow;
-    private final TextView[] effortChips = new TextView[3];
 
     private final Runnable saveTask = new Runnable() {
         @Override
@@ -72,7 +72,14 @@ final class ExerciseScreen extends Screen {
         EditText weight;
         EditText reps;
         ImageView check;
+        /** "How was it?" under a ticked set: the three answers, or the one given (tap to change). */
+        LinearLayout ask;
+        LinearLayout options;
+        TextView answer;
+        final LinearLayout[] feelViews = new LinearLayout[3];
         boolean done;
+        int feel;
+        boolean changing;
         int flags;
     }
 
@@ -167,16 +174,27 @@ final class ExerciseScreen extends Screen {
         adviceView = new AdviceView();
         col.addView(adviceView.card, ui.spaced(12));
 
+        // Last time, set by set, in the same order as the rows below.
         LinearLayout info = ui.column();
         info.setBackground(ui.round(CARD, 16));
-        info.setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(14));
-        prevTitle = ui.text(13, DIM, true);
-        prevSets = ui.text(17, TEXT, true);
-        prevSets.setPadding(0, ui.dp(3), 0, 0);
+        info.setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12));
+        LinearLayout prevHead = ui.row();
+        prevTitle = ui.text(14, TEXT, true);
+        prevHead.addView(prevTitle, Ui.fill());
+        prevDate = ui.text(13, DIM, false);
+        prevHead.addView(prevDate);
+        info.addView(prevHead);
+        prevTable = ui.column();
+        prevTable.setPadding(0, ui.dp(6), 0, 0);
+        info.addView(prevTable);
+        prevRule = new View(act);
+        prevRule.setBackgroundColor(FAINT);
+        LinearLayout.LayoutParams rule = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(1));
+        rule.topMargin = ui.dp(8);
+        info.addView(prevRule, rule);
         records = ui.text(13, SOFT, false);
+        records.setLineSpacing(0, 1.1f);
         records.setPadding(0, ui.dp(8), 0, 0);
-        info.addView(prevTitle);
-        info.addView(prevSets);
         info.addView(records);
         col.addView(info, ui.spaced(12));
 
@@ -215,25 +233,6 @@ final class ExerciseScreen extends Screen {
             }
         });
         col.addView(addSet, ui.spaced(10));
-
-        effortRow = ui.column();
-        effortRow.addView(ui.text("Πώς ήταν; (προαιρετικό, βοηθάει τον στόχο)", 13, DIM, true));
-        LinearLayout chips = ui.row();
-        for (int i = 0; i < 3; i++) {
-            final int effort = i + 1;
-            effortChips[i] = ui.pill(EFFORTS[i]);
-            effortChips[i].setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    rate(effort);
-                }
-            });
-            LinearLayout.LayoutParams lp = Ui.fill();
-            if (i < 2) lp.rightMargin = ui.dp(8);
-            chips.addView(effortChips[i], lp);
-        }
-        effortRow.addView(chips, ui.spaced(8));
-        col.addView(effortRow, ui.spaced(18));
 
         nextView = new AdviceView();
         col.addView(nextView.card, ui.spaced(14));
@@ -306,19 +305,13 @@ final class ExerciseScreen extends Screen {
         prev = prevDay == Db.NO_DAY ? null : db.session(exerciseId, prevDay);
         Session cur = db.session(exerciseId, day);
 
-        if (prev != null) {
-            prevTitle.setText("Προηγούμενη φορά  ·  " + Fmt.day(prev.day, today));
-            prevSets.setText(Fmt.sets(prev));
-            prevSets.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        } else {
-            prevTitle.setText("Πρώτη φορά");
-            prevSets.setText("Ό,τι γράψεις σήμερα γίνεται η βάση σου· από την επόμενη φορά θα βλέπεις PR.");
-            prevSets.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        }
+        showPrevious(today);
         if (before.sets == 0) {
             records.setVisibility(View.GONE);
+            prevRule.setVisibility(View.GONE);
         } else {
             records.setVisibility(View.VISIBLE);
+            prevRule.setVisibility(prev != null ? View.VISIBLE : View.GONE);
             if (before.bestE1rm > 0) {
                 records.setText("Ρεκόρ ≈1RM " + Fmt.num1(before.bestE1rm) + " kg  (" + Fmt.kg(before.bestE1rmWeight)
                         + " × " + before.bestE1rmReps + ")\nΒαρύτερο " + Fmt.kg(before.maxWeight) + " kg × "
@@ -344,9 +337,9 @@ final class ExerciseScreen extends Screen {
         propagating = true;
         rows.clear();
         rowsBox.removeAllViews();
-        for (int i = 0; i < cur.n; i++) addRow(Fmt.kg(cur.weight[i]), String.valueOf(cur.reps[i]), true);
-        for (int i = cur.n; i < plan.size(); i++) addRow(plan.get(i)[0], plan.get(i)[1], false);
-        if (rows.isEmpty()) addRow("", "", false);
+        for (int i = 0; i < cur.n; i++) addRow(Fmt.kg(cur.weight[i]), String.valueOf(cur.reps[i]), true, cur.feel[i]);
+        for (int i = cur.n; i < plan.size(); i++) addRow(plan.get(i)[0], plan.get(i)[1], false, 0);
+        if (rows.isEmpty()) addRow("", "", false, 0);
         propagating = false;
         judge(null);
     }
@@ -376,24 +369,58 @@ final class ExerciseScreen extends Screen {
         });
     }
 
-    private void rate(int effort) {
-        int now = db.effort(exerciseId, day) == effort ? 0 : effort;
-        db.setEffort(exerciseId, day, now);
-        judge(null);
+    /** Last time's sets as a small table: set, weight, reps, how it felt. */
+    private void showPrevious(long today) {
+        prevTable.removeAllViews();
+        if (prev == null) {
+            prevTitle.setText("Πρώτη φορά");
+            prevDate.setText("");
+            TextView t = ui.text("Ό,τι γράψεις σήμερα γίνεται η βάση σου. Από την επόμενη φορά βλέπεις στόχο και PR.",
+                    14, SOFT, false);
+            t.setLineSpacing(0, 1.1f);
+            prevTable.addView(t);
+            return;
+        }
+        prevTitle.setText("Προηγούμενη φορά");
+        prevDate.setText(Fmt.day(prev.day, today));
+        double top = Coach.work(prev).top;
+        for (int i = 0; i < prev.n; i++) {
+            boolean warm = Coach.isWarmUp(prev.weight[i], top);
+            LinearLayout line = ui.row();
+            line.setPadding(0, ui.dp(5), 0, ui.dp(5));
+            TextView num = ui.text(String.valueOf(i + 1), 13, DIM, true);
+            line.addView(num, new LinearLayout.LayoutParams(ui.dp(22), ViewGroup.LayoutParams.WRAP_CONTENT));
+            TextView kg = ui.text(Fmt.load(prev.weight[i]), 17, warm ? SOFT : TEXT, true);
+            kg.setFontFeatureSettings("tnum");
+            kg.setGravity(Gravity.END);
+            line.addView(kg, new LinearLayout.LayoutParams(ui.dp(76), ViewGroup.LayoutParams.WRAP_CONTENT));
+            TextView times = ui.text("×", 15, DIM, false);
+            times.setGravity(Gravity.CENTER);
+            line.addView(times, new LinearLayout.LayoutParams(ui.dp(26), ViewGroup.LayoutParams.WRAP_CONTENT));
+            TextView reps = ui.text(String.valueOf(prev.reps[i]), 17, warm ? SOFT : TEXT, true);
+            reps.setFontFeatureSettings("tnum");
+            line.addView(reps, new LinearLayout.LayoutParams(ui.dp(34), ViewGroup.LayoutParams.WRAP_CONTENT));
+            int f = prev.feel[i];
+            LinearLayout how = ui.row();
+            if (f != 0) {
+                View dot = new View(act);
+                dot.setBackground(ui.round(Theme.feel(f), 4));
+                LinearLayout.LayoutParams dl = ui.size(8, 8);
+                dl.rightMargin = ui.dp(6);
+                how.addView(dot, dl);
+            }
+            how.addView(ui.text(f != 0 ? Fmt.feel(f) : warm ? "ζέσταμα" : "", 14, f != 0 ? Theme.feel(f) : DIM, f != 0));
+            line.addView(how, Ui.fill());
+            prevTable.addView(line);
+        }
     }
 
-    /**
-     * Effort chips once something is ticked; next time's target once every set is ticked, scrolled
-     * into view when a tick just finished the exercise.
-     */
+    /** Next time's target once every set is ticked, scrolled into view when a tick just finished the exercise. */
     private void showOutcome(int done, boolean finished, boolean ticked) {
         boolean wasShown = nextView.card.getVisibility() == View.VISIBLE;
-        effortRow.setVisibility(done > 0 ? View.VISIBLE : View.GONE);
-        int effort = done > 0 ? db.effort(exerciseId, day) : 0;
-        for (int i = 0; i < 3; i++) ui.stylePill(effortChips[i], effort == i + 1);
         Coach.Advice next = null;
         if (done > 0 && finished) {
-            next = Coach.next(db.recent(exerciseId, day + 1, Coach.RECENT), db.coachSettings(exerciseId), day);
+            next = Coach.next(db.recent(exerciseId, day + 1, Coach.LOAD), db.coachSettings(exerciseId), day);
         }
         nextView.show(next, "Επόμενη φορά");
         if (next != null && !wasShown && ticked) {
@@ -418,30 +445,33 @@ final class ExerciseScreen extends Screen {
             r = last.reps.getText().toString();
         }
         propagating = true;
-        addRow(w, r, false);
+        addRow(w, r, false, 0);
         propagating = false;
         judge(null);
     }
 
-    private void addRow(String w, String r, boolean done) {
+    private void addRow(String w, String r, boolean done, int feel) {
         final Row row = new Row();
         row.done = done;
-        row.view = ui.row();
+        row.feel = done ? feel : 0;
+        row.view = ui.column();
         row.view.setPadding(ui.dp(6), ui.dp(6), ui.dp(6), ui.dp(6));
+        LinearLayout line = ui.row();
+        row.view.addView(line, Ui.matchWrap());
 
         row.num = ui.text(15, DIM, true);
         row.num.setGravity(Gravity.CENTER);
-        row.view.addView(row.num, ui.size(30, 30));
+        line.addView(row.num, ui.size(30, 30));
 
         row.weight = numberField(true);
         row.weight.setText(w);
-        row.view.addView(stepperGroup(row.weight, true), Ui.fill());
+        line.addView(stepperGroup(row.weight, true), Ui.fill());
 
         row.reps = numberField(false);
         row.reps.setText(r);
         LinearLayout.LayoutParams rlp = Ui.fill();
         rlp.leftMargin = ui.dp(6);
-        row.view.addView(stepperGroup(row.reps, false), rlp);
+        line.addView(stepperGroup(row.reps, false), rlp);
 
         row.check = new ImageView(act);
         row.check.setImageResource(R.drawable.ic_check);
@@ -455,7 +485,53 @@ final class ExerciseScreen extends Screen {
         });
         LinearLayout.LayoutParams clp = ui.size(42, 42);
         clp.leftMargin = ui.dp(6);
-        row.view.addView(row.check, clp);
+        line.addView(row.check, clp);
+
+        // How it felt: asked under the set once it is ticked.
+        row.ask = ui.column();
+        row.ask.setPadding(ui.dp(30), ui.dp(8), 0, ui.dp(2));
+        LinearLayout askHead = ui.row();
+        askHead.addView(ui.text("Πώς ήταν;", 13, SOFT, true));
+        row.answer = ui.text(13, TEXT, true);
+        row.answer.setPadding(ui.dp(12), ui.dp(5), ui.dp(12), ui.dp(5));
+        row.answer.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                row.changing = true;
+                judge(null);
+            }
+        });
+        LinearLayout.LayoutParams alp = Ui.wrap();
+        alp.leftMargin = ui.dp(10);
+        askHead.addView(row.answer, alp);
+        row.ask.addView(askHead);
+        LinearLayout options = ui.row();
+        row.options = options;
+        for (int i = 0; i < 3; i++) {
+            final int f = i + 1;
+            LinearLayout opt = ui.column();
+            opt.setGravity(Gravity.CENTER);
+            opt.setPadding(ui.dp(4), ui.dp(7), ui.dp(4), ui.dp(7));
+            TextView title = ui.text(Fmt.feelTitle(f), 14, TEXT, true);
+            title.setGravity(Gravity.CENTER);
+            opt.addView(title);
+            TextView hint = ui.text(Fmt.feelHint(f), 11, DIM, false);
+            hint.setGravity(Gravity.CENTER);
+            opt.addView(hint);
+            opt.setContentDescription(Fmt.feelTitle(f));
+            opt.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    rate(row, f);
+                }
+            });
+            row.feelViews[i] = opt;
+            LinearLayout.LayoutParams olp = Ui.fill();
+            if (i > 0) olp.leftMargin = ui.dp(6);
+            options.addView(opt, olp);
+        }
+        row.ask.addView(options, ui.spaced(6));
+        row.view.addView(row.ask, Ui.matchWrap());
 
         row.weight.addTextChangedListener(new Watcher() {
             @Override
@@ -564,6 +640,7 @@ final class ExerciseScreen extends Screen {
             return;
         }
         row.done = !row.done;
+        if (!row.done) row.feel = 0;
         if (row.done) {
             // Show the value as it is stored ("52,5" -> "52.5", "" -> "0").
             propagating = true;
@@ -576,6 +653,16 @@ final class ExerciseScreen extends Screen {
         ui.hideKeyboard(row.view);
         save();
         judge(row);
+    }
+
+    /** Answer to "how was it?" for one set; tapping the chosen one again clears it. */
+    private void rate(Row row, int f) {
+        if (!row.done) return;
+        row.feel = row.feel == f ? 0 : f;
+        row.changing = false;
+        row.view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+        save();
+        judge(null);
     }
 
     private void rowMenu(final Row row) {
@@ -597,7 +684,7 @@ final class ExerciseScreen extends Screen {
         for (Row r : rows) {
             if (!r.done) continue;
             int reps = Fmt.parseReps(r.reps.getText().toString());
-            if (reps > 0) s.add(Fmt.parseKg(r.weight.getText().toString()), reps);
+            if (reps > 0) s.add(Fmt.parseKg(r.weight.getText().toString()), reps, r.feel);
         }
         db.saveSession(exerciseId, s);
     }
@@ -686,6 +773,25 @@ final class ExerciseScreen extends Screen {
         } else {
             r.check.setBackground(ui.ripple(ui.outline(0, DIM, 21), 21));
             r.check.setImageTintList(ColorStateList.valueOf(DIM));
+        }
+        r.ask.setVisibility(r.done ? View.VISIBLE : View.GONE);
+        // Answered: just the answer, which opens the choices again when tapped.
+        boolean answered = r.feel != 0 && !r.changing;
+        r.options.setVisibility(answered ? View.GONE : View.VISIBLE);
+        r.answer.setVisibility(answered ? View.VISIBLE : View.GONE);
+        if (answered) {
+            r.answer.setText(Fmt.feelTitle(r.feel) + "  ✎");
+            r.answer.setTextColor(BG);
+            r.answer.setBackground(ui.ripple(Theme.feel(r.feel), 14));
+            r.answer.setContentDescription("Πώς ήταν: " + Fmt.feelTitle(r.feel) + ", αλλαγή");
+        }
+        for (int i = 0; i < 3; i++) {
+            LinearLayout opt = r.feelViews[i];
+            boolean on = r.feel == i + 1;
+            opt.setBackground(on ? ui.ripple(Theme.feel(i + 1), 12) : ui.ripple(ui.outline(0x0FFFFFFF, 0x33FFFFFF, 12), 12));
+            ((TextView) opt.getChildAt(0)).setTextColor(on ? BG : TEXT);
+            ((TextView) opt.getChildAt(1)).setTextColor(on ? 0xCC0F1115 : DIM);
+            opt.setSelected(on);
         }
     }
 
