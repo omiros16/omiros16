@@ -21,33 +21,39 @@ def show(name, url, n=1500, headers=None):
     if n: print(body[:n])
     return body
 
-r = json.loads(show("espn gre roster", "https://site.api.espn.com/apis/site/v2/sports/soccer/gre.1/teams/435/roster", 0))
-best = None
-for x in r["athletes"]:
-    cats = x.get("statistics", {}).get("splits", {}).get("categories", [])
-    flat = {s["name"]: s.get("value") for c in cats for s in c.get("stats", [])}
-    if flat.get("totalGoals", 0) and (best is None or flat["totalGoals"] > best[1].get("totalGoals", 0)):
-        best = (x["displayName"], flat, [c["name"] for c in cats], x.get("position", {}).get("abbreviation"))
-print("best scorer", best)
-print("season", json.dumps(r.get("season"))[:300])
+def walk(o, path="", depth=0, out=None):
+    """Print key paths that mention injur/unavail/suspend."""
+    if out is None: out = []
+    if depth > 9: return out
+    if isinstance(o, dict):
+        for k, v in o.items():
+            p = path + "." + k
+            if re.search(r"injur|unavail|suspen|absent|missing", k, re.I): out.append((p, json.dumps(v)[:600]))
+            walk(v, p, depth + 1, out)
+    elif isinstance(o, list):
+        for i, v in enumerate(o[:3]): walk(v, path + f"[{i}]", depth + 1, out)
+    return out
 
-for lg in ["por.1", "bel.1", "aut.1", "sui.1", "den.1", "pol.1", "rou.1", "nor.1", "swe.1", "fin.1", "irl.1", "rus.1", "esp.1", "ger.1", "ita.1", "fra.1"]:
-    s = show("espn " + lg, f"https://site.api.espn.com/apis/site/v2/sports/soccer/{lg}/scoreboard?dates=20261004", 0)
-    try:
-        j = json.loads(s); e = j.get("events", [])
-        print(lg, j.get("leagues", [{}])[0].get("name"), "events", len(e))
-    except Exception as ex:
-        print(lg, "err", ex)
-for q in ["dates=202610", "dates=20261001-20261007", "dates=20261001-20261007&limit=200", "dates=2026"]:
-    s = show("espn range " + q, f"https://site.api.espn.com/apis/site/v2/sports/soccer/gre.1/scoreboard?{q}", 0)
-    try:
-        j = json.loads(s); e = j.get("events", []); print(q, "events", len(e), [x.get("date") for x in e[:3]], [x.get("date") for x in e[-2:]])
-    except Exception as ex:
-        print(q, "err", ex)
-show("fd new fixtures", "https://www.football-data.co.uk/new_league_fixtures.csv", 600)
-b = show("sg greece", "https://www.sportsgambler.com/injuries/football/greece-super-league/", 0)
-print("greek teams", re.findall(r'<h3 class="injuries-title"[^>]*>(?:<a[^>]*>)?(.*?)(?:</a>)?</h3>', b))
-for slug in ["poland-ekstraklasa", "romania-liga-1", "finland-veikkausliiga"]:
-    b = show("sg " + slug, f"https://www.sportsgambler.com/injuries/football/{slug}/", 0)
-    print(slug, b.count("inj-row"))
-show("clubelo", "http://api.clubelo.com/2026-10-20", 400)
+L = json.loads(show("fotmob gre league", "https://www.fotmob.com/api/data/leagues?id=135", 0))
+print("league keys", list(L.keys()))
+try:
+    tbl = L["table"][0]["data"]["table"]["all"]
+    print("table", [(t["id"], t["name"]) for t in tbl])
+    tid = tbl[0]["id"]
+except Exception as e:
+    print("table err", e); tid = 8638
+fx = L.get("fixtures", {}).get("allMatches", [])
+print("n fixtures", len(fx), json.dumps(fx[:1])[:600])
+upcoming = [m for m in fx if not m.get("status", {}).get("finished")]
+T = json.loads(show("fotmob team", f"https://www.fotmob.com/api/data/teams?id={tid}", 0))
+print("team keys", list(T.keys()))
+for p, v in walk(T)[:12]: print("  ", p, v)
+sq = T.get("squad", {})
+print("squad", json.dumps(sq)[:2500])
+if upcoming:
+    mid = upcoming[0]["id"]
+    D = json.loads(show("fotmob match", f"https://www.fotmob.com/api/data/matchDetails?matchId={mid}", 300) or "{}")
+    for p, v in walk(D)[:12]: print("  ", p, v)
+show("fotmob playerstats", "https://www.fotmob.com/api/data/leagueseasondeepstats?id=135&season=2026/2027&type=players&stat=goals", 400)
+for path in ["/competition/GR1/clubs", "/competition/GR1/injuries", "/club/683/injuries", "/club/683/squad"]:
+    show("tmapi " + path, "https://tmapi-alpha.transfermarkt.technology" + path, 500)

@@ -342,3 +342,85 @@ export function goalTiming(lt, ht) {
   const none = (t) => Math.exp(-cum(t));
   return { firstBefore: (t) => 1 - none(t), between: (t0, t1) => none(t0) - none(t1), none: none(90) };
 }
+
+// ---------------------------------------------------------------- players and absences
+
+const POS_PRIOR = { F: 0.33, M: 0.11, D: 0.035, G: 0 };      // goals per 90 before evidence
+const POS_APRIOR = { F: 0.14, M: 0.12, D: 0.05, G: 0.005 };  // assists per 90
+const POS_YPRIOR = { F: 0.13, M: 0.2, D: 0.2, G: 0.05 };     // yellow cards per 90
+const POS_DEF = { G: 0.07, D: 0.045, M: 0.02, F: 0.005 };    // extra goals conceded when a regular is out
+
+// Player tuple: [name, team, pos, games, minutes, goals, xG|null, assists, xA|null, shots|null, yellows, reds]
+export const P = { N: 0, T: 1, POS: 2, GP: 3, MIN: 4, G: 5, XG: 6, A: 7, XA: 8, SH: 9, Y: 10, R: 11 };
+
+function rate90(evidence, minutes, prior, k) {
+  const m90 = minutes / 90;
+  return (evidence + k * prior) / (m90 + k);
+}
+
+// Per-player scoring/assist/card rates for one team, with each player's expected minutes.
+export function squad(players, team, teamGames) {
+  const out = [];
+  for (const p of players) {
+    if (p[P.T] !== team || !(p[P.MIN] > 0)) continue;
+    const pos = (p[P.POS] || 'M')[0];
+    const gEv = num(p[P.XG]) ? 0.7 * p[P.XG] + 0.3 * p[P.G] : p[P.G];
+    const aEv = num(p[P.XA]) ? 0.7 * p[P.XA] + 0.3 * p[P.A] : p[P.A];
+    const kg = num(p[P.XG]) ? 2.5 : 4;
+    out.push({
+      name: p[P.N], pos, games: p[P.GP], minutes: p[P.MIN], goals: p[P.G], assists: p[P.A], xg: p[P.XG],
+      yellows: p[P.Y], reds: p[P.R],
+      g90: rate90(gEv, p[P.MIN], POS_PRIOR[pos] ?? 0.1, kg),
+      a90: rate90(aEv, p[P.MIN], POS_APRIOR[pos] ?? 0.1, kg),
+      y90: rate90(p[P.Y] || 0, p[P.MIN], POS_YPRIOR[pos] ?? 0.15, 4),
+      share: Math.min(1, p[P.MIN] / (90 * Math.max(teamGames, p[P.GP], 1))), // of the team's minutes
+      perGame: Math.min(95, p[P.MIN] / Math.max(1, p[P.GP])),                 // minutes when he plays
+      avail: 1,
+    });
+  }
+  return out;
+}
+
+// Effect of missing players on a team's attack (multiplier on goals scored) and defence
+// (multiplier on goals conceded). `avail` is each player's chance of playing (0..1).
+export function absenceEffect(sq) {
+  let massAll = 0, massLost = 0, defLost = 0;
+  for (const p of sq) {
+    const mass = (p.g90 + 0.5 * p.a90) * p.share;
+    massAll += mass;
+    const miss = 1 - p.avail;
+    if (miss <= 0) continue;
+    massLost += mass * miss;
+    defLost += (POS_DEF[p.pos] ?? 0.02) * p.share * miss;
+  }
+  const attLoss = massAll > 0 ? (0.4 * massLost) / massAll : 0;
+  return { att: Math.max(0.75, 1 - attLoss), def: Math.min(1.25, 1 + defLost), attLoss, defLost };
+}
+
+// Goalscorer, assist and booking probabilities for the players likely to feature.
+// Probabilities assume the player takes part (bookmakers void the bet otherwise).
+export function playerMarkets(sq, lTeam, lTotal, cardsTeam) {
+  const live = sq.filter((p) => p.avail > 0);
+  const gMass = live.reduce((s, p) => s + p.g90 * p.share * p.avail, 0);
+  const aMass = live.reduce((s, p) => s + p.a90 * p.share * p.avail, 0);
+  const yMass = live.reduce((s, p) => s + p.y90 * p.share * p.avail, 0);
+  const goalsByPlayers = lTeam * 0.96; // the rest are own goals
+  const assisted = lTeam * 0.72;
+  const pAny = 1 - Math.exp(-lTotal);
+  return live.map((p) => {
+    const t = p.perGame / 90;
+    const mg = gMass > 0 ? (goalsByPlayers * p.g90 * t) / gMass : 0;
+    const ma = aMass > 0 ? (assisted * p.a90 * t) / aMass : 0;
+    const my = yMass > 0 && cardsTeam ? (cardsTeam * p.y90 * t) / yMass : 0;
+    return {
+      ...p, mg, ma,
+      anytime: 1 - Math.exp(-mg),
+      first: lTotal > 0 ? (mg / lTotal) * pAny : 0,
+      brace: 1 - Math.exp(-mg) * (1 + mg),
+      hat: 1 - Math.exp(-mg) * (1 + mg + (mg * mg) / 2),
+      assist: 1 - Math.exp(-ma),
+      gOrA: 1 - Math.exp(-(mg + ma)),
+      card: 1 - Math.exp(-my),
+    };
+  }).sort((x, y) => y.anytime - x.anytime);
+}
