@@ -138,8 +138,6 @@ export function convolve(a, b) {
   return out;
 }
 
-const tail = (p, k) => { let s = 0; for (let i = k; i < p.length; i++) s += p[i]; return s; }; // P(X >= k)
-
 export function dcTau(i, j, l, m, rho) {
   if (i === 0 && j === 0) return 1 - l * m * rho;
   if (i === 0 && j === 1) return 1 + l * rho;
@@ -260,7 +258,7 @@ export function h2hAdjust(meetings, home, away, lh, la, homeAdv, weight) {
     const hg = m[F.HG], ag = m[F.AG];
     if (!num(hg) || !num(ag)) continue;
     const sign = m[F.H] === home ? 1 : -1;
-    gd += sign * (hg - ag) - (sign === 1 ? homeAdv : -homeAdv) + 0; // remove venue edge
+    gd += sign * (hg - ag) - sign * homeAdv; // goal difference with the venue edge removed
     tot += hg + ag; n++;
   }
   if (!n) return { fh: 1, fa: 1, n: 0 };

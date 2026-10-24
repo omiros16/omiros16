@@ -29,13 +29,17 @@ export function analyze(lg, h, a, opts = {}) {
   const params = opts.params || {};
   const [lh0, la0] = expectedGoals(fit, h, a);
 
+  // A squad is usable only if its players account for most of the team's minutes; with gaps
+  // in the player data each listed player would look more important than he is.
+  const games = [h, a].map((t) => Math.max(1, seasonGames(lg, t)));
   const squads = [h, a].map((t, side) => {
-    const sq = squad(lg.players || [], t, Math.max(1, seasonGames(lg, t)));
+    const sq = squad(lg.players || [], t, games[side]);
     const av = availability(lg, t, (opts.overrides || {})[side] || {});
     for (const p of sq) if (av.has(p.name)) p.avail = av.get(p.name);
     return sq;
   });
-  const eff = squads.map((sq) => absenceEffect(sq));
+  const covered = squads.map((sq, side) => sq.reduce((s, p) => s + p.minutes, 0) / (990 * games[side]) >= 0.6);
+  const eff = squads.map((sq, side) => (covered[side] ? absenceEffect(sq) : { att: 1, def: 1, attLoss: 0, defLost: 0 }));
   const lh1 = lh0 * eff[0].att * eff[1].def, la1 = la0 * eff[1].att * eff[0].def;
 
   const meetings = meetingsOf(lg, h, a);
@@ -50,22 +54,21 @@ export function analyze(lg, h, a, opts = {}) {
     if (s) stats[k] = s;
   }
   let refFactor = 1;
-  if (opts.referee && fit.refs && fit.refs[opts.referee]) refFactor = fit.refs[opts.referee].f;
+  if (opts.referee !== null && opts.referee !== undefined && fit.refs?.[opts.referee]) refFactor = fit.refs[opts.referee].f;
   if (stats.yellows && refFactor !== 1) stats.yellows = { ...stats.yellows, mh: stats.yellows.mh * refFactor, ma: stats.yellows.ma * refFactor };
 
-  const hasPlayers = squads.some((s) => s.length > 3);
-  const playersH = hasPlayers ? playerMarkets(squads[0], lh, lh + la, stats.yellows?.mh) : [];
-  const playersA = hasPlayers ? playerMarkets(squads[1], la, lh + la, stats.yellows?.ma) : [];
+  const playersH = covered[0] ? playerMarkets(squads[0], lh, lh + la, stats.yellows?.mh) : [];
+  const playersA = covered[1] ? playerMarkets(squads[1], la, lh + la, stats.yellows?.ma) : [];
   const names = [lg.teams[h], lg.teams[a]];
   const markets = buildMarkets({ M, lh, la, ht: fit.ht, names, stats, playersH, playersA });
 
   const n = fit.goals.n || [];
   const warnings = [];
   if ((n[h] ?? 0) < 6 || (n[a] ?? 0) < 6) warnings.push('Λίγοι πρόσφατοι αγώνες για μία από τις ομάδες: οι πιθανότητες είναι λιγότερο σίγουρες.');
-  for (const t of [h, a]) if ((lg.promoted || []).includes(lg.teams[t])) warnings.push(`Η ${lg.teams[t]} είναι νεοφώτιστη: ξεκίνησε με πιο αδύναμη εκτίμηση και προσαρμόζεται όσο παίζει.`);
+  for (const t of [h, a]) if ((lg.promoted || []).includes(lg.teams[t]) && (n[t] ?? 0) < 12) warnings.push(`Η ${lg.teams[t]} είναι νεοφώτιστη: ξεκίνησε με πιο αδύναμη εκτίμηση και προσαρμόζεται όσο παίζει.`);
 
   return {
-    h, a, names, lh, la, lh0, la0, M, p: outcome1x2(M), markets, stats, eff, squads, playersH, playersA,
+    h, a, names, lh, la, lh0, la0, M, p: outcome1x2(M), markets, stats, eff, squads, covered, playersH, playersA,
     meetings, h2h: adj, refFactor, warnings,
   };
 }

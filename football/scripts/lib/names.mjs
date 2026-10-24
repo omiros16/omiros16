@@ -5,6 +5,7 @@ const EXPAND = {
   sg: 'saint germain', psg: 'paris saint germain', ath: 'athletic', atl: 'atletico', olympiakos: 'olympiacos',
   inter: 'internazionale', qpr: 'queens park rangers', wba: 'west bromwich', bilbao: 'athletic',
   kobenhavn: 'copenhagen', basaksehir: 'buyuksehyr', hamarkameratene: 'hamkam', agf: 'aarhus', ob: 'odense',
+  cologne: 'koln',
 };
 // Names that share too little text to be matched automatically: source spelling -> football-data name.
 export const ALIASES = {
