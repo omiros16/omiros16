@@ -9,6 +9,7 @@ import { parseCsv, dayOf, isoDay, today } from './lib/csv.mjs';
 import { matchNames, playerSimilarity } from './lib/names.mjs';
 import { F, fitLeague } from '../js/model.js';
 import { prepare, runLeague, score, statsCheck, promotedAt } from './backtest.mjs';
+import { analyze } from '../js/analyze.js';
 
 const OUT = process.argv[2] || 'football/data';
 const REF = today();
@@ -79,7 +80,7 @@ async function loadResults(lg) {
 
 // ---------------------------------------------------------------- Understat (xG + players)
 
-async function understat(lg, fdTeams, rows) {
+async function understat(lg, fdTeams, rows, curTeams) {
   if (!lg.us) return null;
   const { year } = seasonCodes();
   const cur = await getJson(`https://understat.com/getLeagueData/${lg.us}/${year}`, XHR_US);
@@ -110,7 +111,7 @@ async function understat(lg, fdTeams, rows) {
   for (const p of cur.players || []) {
     const teamTitle = String(p.team_title).split(',').pop().trim();
     const t = map.get(teamTitle);
-    if (t === undefined) continue;
+    if (t === undefined || !curTeams.includes(fdTeams[t])) continue;
     const pos = String(p.position || 'M').split(' ')[0];
     players.push({ name: p.player_name, team: fdTeams[t], pos: pos === 'GK' ? 'G' : pos[0], gp: +p.games, min: +p.time, g: +p.goals, xg: +p.xG, a: +p.assists, xa: +p.xA, sh: +p.shots, y: +p.yellow_cards, r: +p.red_cards });
   }
@@ -266,7 +267,9 @@ async function buildLeague(lg) {
   const refsList = [...new Set(rows.map((r) => r.ref).filter(Boolean))];
   const ri = new Map(refsList.map((r, i) => [r, i]));
 
-  const usPlayers = await understat(lg, curTeams, rows).catch((e) => (log('  understat failed', e.message), null));
+  // Understat also covers last season, so relegated sides must be matchable too.
+  const recentTeams = [...new Set(rows.filter((r) => r.d >= REF - MODEL_DAYS).flatMap((r) => [r.home, r.away]))];
+  const usPlayers = await understat(lg, recentTeams, rows, curTeams).catch((e) => (log('  understat failed', e.message), null));
   const tuple = (r) => [r.d, ti.get(r.home), ti.get(r.away), ...r.v.slice(0, 16), r.v[16], r.v[17], r.ref ? ri.get(r.ref) : null];
   const all = rows.map(tuple);
 
@@ -340,8 +343,8 @@ async function main() {
 
   // Choose model settings by pooled walk-forward log-loss.
   const grid = [];
-  for (const halfLife of [90, 150, 240, 360]) for (const wxg of [0, 0.35, 0.7]) grid.push({ halfLife, wxg, k: 4 });
-  const h2hW = [0, 0.5, 1];
+  for (const halfLife of [150, 270, 400, 600]) for (const wxg of [0.2, 0.35, 0.55]) grid.push({ halfLife, wxg, k: 4 });
+  const h2hW = [0, 1, 2];
   const t0 = Date.now();
   const perLeague = built.map((b) => runLeague(b.bt, grid, REF, h2hW));
   const pooled = grid.map((g, gi) => h2hW.map((hw, hi) => {
@@ -358,6 +361,20 @@ async function main() {
   log(`\nbacktest ${((Date.now() - t0) / 1000).toFixed(1)}s, chosen ${JSON.stringify(params)}`);
   grid.forEach((g, gi) => log(`  hl=${g.halfLife} wxg=${g.wxg}: ${pooled[gi].map((v) => v.toFixed(4)).join(' / ')}`));
 
+  // Shrinkage for corners/cards/shots/fouls: pick the strength that predicted best overall.
+  const KS = [6, 15, 40, 100];
+  const statRes = built.map((b) => (b.lg.fd ? statsCheck(b.bt, params.halfLife, REF, KS) : {}));
+  params.statK = {};
+  for (const name of ['corners', 'yellows', 'sot', 'fouls']) {
+    const tot = Object.fromEntries(KS.map((k) => [k, 0]));
+    let cnt = 0;
+    for (const r of statRes) if (r[name]) { for (const k of KS) tot[k] += r[name].byK[k] * r[name].n; cnt += r[name].n; }
+    if (!cnt) continue;
+    params.statK[name] = +KS.reduce((a, k) => (tot[k] < tot[a] ? k : a), KS[0]);
+    log(`  ${name}: ${KS.map((k) => `k=${k} ${(tot[k] / cnt).toFixed(4)}`).join(', ')} -> ${params.statK[name]}`);
+  }
+  params.statK.shots = params.statK.sot;
+
   await mkdir(`${OUT}/leagues`, { recursive: true });
   const index = { updated: new Date().toISOString(), ref: REF, params, leagues: [], fixtures: [] };
   const fmt = (x) => (x === null ? null : +x.toFixed(4));
@@ -365,7 +382,7 @@ async function main() {
     const { lg } = b;
     const sc = score(b.bt, perLeague[li][best[0]][best[1]]);
     const base = score(b.bt, perLeague[li][best[0]][0]);
-    const stats = lg.fd ? statsCheck(b.bt, params, REF) : {};
+    const stats = Object.fromEntries(Object.entries(statRes[li]).map(([k, v]) => [k, { line: v.line, n: v.n, ll: fmt(v.byK[params.statK[k]]), llBase: fmt(v.base) }]));
     const promoted = promotedAt(b.bt, REF).map((t) => b.teams[t]);
     const window = b.all.filter((m) => m[F.D] >= REF - MODEL_DAYS);
     const fit = fitLeague(window, b.teams.length, REF + 1, params, promotedAt(b.bt, REF));
@@ -391,8 +408,17 @@ async function main() {
       fit: fitOut, players: b.players, playersSrc: b.playersSrc, inj: b.inj, injSrc: b.absSrc, fixtures, bt: btOut,
     };
     await writeFile(`${OUT}/leagues/${lg.id}.json`, JSON.stringify(file));
+    const quick = new Map();
+    for (const f of b.fixtures) {
+      try {
+        const r = analyze(file, b.ti.get(f.home), b.ti.get(f.away), { params });
+        const ou = r.markets.find((g) => g.id === 'ou').items.find((it) => it.l === 'Over 2.5').pw;
+        const gg = r.markets.find((g) => g.id === 'gg').items[0].pw;
+        quick.set(f, [...r.p, ou, gg].map((x) => +x.toFixed(3)));
+      } catch (e) { log(`  quick ${f.home}-${f.away}: ${e.message}`); }
+    }
     index.leagues.push({ id: lg.id, name: lg.name, country: lg.country, flag: lg.flag, teams: b.curTeams, hasStats: !!lg.fd, players: b.playersSrc, inj: b.absSrc, n: window.length, bt: { n: sc.n, ll: btOut.ll, llMkt: btOut.llMkt, acc: btOut.acc, roi: btOut.roi, bets: btOut.bets } });
-    for (const f of b.fixtures) index.fixtures.push([lg.id, f.t || isoDay(f.d), f.home, f.away]);
+    for (const f of b.fixtures) index.fixtures.push([lg.id, f.t || isoDay(f.d), f.home, f.away, quick.get(f) || null]);
   }
   // A league whose sources failed this week keeps last week's published file.
   const prevUrl = process.env.PREV_URL;

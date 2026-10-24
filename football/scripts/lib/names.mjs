@@ -4,13 +4,18 @@ const EXPAND = {
   mgladbach: 'monchengladbach', gladbach: 'monchengladbach', ein: 'eintracht', sp: 'sporting', st: 'saint',
   sg: 'saint germain', psg: 'paris saint germain', ath: 'athletic', atl: 'atletico', olympiakos: 'olympiacos',
   inter: 'internazionale', qpr: 'queens park rangers', wba: 'west bromwich', bilbao: 'athletic',
+  kobenhavn: 'copenhagen', basaksehir: 'buyuksehyr', hamarkameratene: 'hamkam', agf: 'aarhus', ob: 'odense',
+};
+// Names that share too little text to be matched automatically: source spelling -> football-data name.
+export const ALIASES = {
+  'Sepsi OSK': 'Sepsi Sf. Gheorghe', 'Union St.Gilloise': 'St. Gilloise', 'Union Saint-Gilloise': 'St. Gilloise',
 };
 const DROP = new Set(['fc', 'afc', 'cf', 'sc', 'ac', 'as', 'ss', 'ssc', 'us', 'club', 'de', 'cd', 'ud', 'rc', 'rcd', 'sd', 'vfl', 'vfb', 'tsg', 'fsv', 'sv', 'bv', 'fk', 'sk', 'nk', 'if', 'bk', 'ff', 'kv', 'krc', 'kaa', 'rsc', 'osc', 'ogc', 'losc', 'stade', 'the', 'and', 'calcio', '1', '1899', '1846', '1848', '1909', '04', '05', '96', 'cfc', 'nfc', 'pae', 'gfc', 'jk']);
 
 export function norm(s) {
   return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
-    .replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/ß/g, 'ss').replace(/ı/g, 'i')
-    .replace(/[’'`.]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+    .replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/ß/g, 'ss').replace(/ı/g, 'i').replace(/ł/g, 'l').replace(/[đð]/g, 'd').replace(/œ/g, 'oe')
+    .replace(/[’'`]/g, '').replace(/\./g, ' ').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
 }
 export function tokens(s) {
   const out = [];
@@ -42,7 +47,7 @@ export function similarity(a, b) {
 }
 
 // Greedy one-to-one assignment of `names` to `targets`; returns Map name -> target index.
-export function matchNames(names, targets, aliases = {}, min = 0.45) {
+export function matchNames(names, targets, aliases = ALIASES, min = 0.45) {
   const out = new Map(), used = new Set();
   for (const n of names) {
     const a = aliases[n];

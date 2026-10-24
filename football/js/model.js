@@ -219,7 +219,7 @@ export function fitLeague(matches, nTeams, refDay, params, promoted = []) {
   const stats = {};
   for (const [name, [ih, ia]] of Object.entries(STATS)) {
     const getH = (m) => m[ih], getA = (m) => m[ia];
-    const kk = name === 'reds' ? 12 : name === 'yellows' ? 6 : used.k;
+    const kk = name === 'reds' ? 12 : params.statK?.[name] ?? params.statK?.sot ?? used.k;
     const fit = fitRatings(past, nTeams, getH, getA, w, { k: kk });
     if (fit.rows < 30 || !(fit.bh >= 0)) continue;
     stats[name] = { bh: fit.bh, ba: fit.ba, att: Array.from(fit.att), def: Array.from(fit.def), r: fitDispersion(past, fit, getH, getA, w) };
@@ -243,7 +243,7 @@ export function fitLeague(matches, nTeams, refDay, params, promoted = []) {
   }
 
   return {
-    refDay, params: used, proxy, rho, ht,
+    refDay, params: { ...used, statK: params.statK }, proxy, rho, ht,
     goals: { bh: goals.bh, ba: goals.ba, att: Array.from(goals.att), def: Array.from(goals.def), n: Array.from(goals.n) },
     stats, refs,
   };
