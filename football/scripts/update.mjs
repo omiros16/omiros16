@@ -460,7 +460,7 @@ async function main() {
     const fit = fitLeague(window, b.teams.length, REF + 1, params, promotedAt(b.bt, REF));
     const old = b.all.filter((m) => m[F.D] < REF - MODEL_DAYS).map((m) => m.slice(0, 7));
     const btOut = {
-      n: sc.n, ll: fmt(sc.ll), llMkt: fmt(sc.llMkt), llNoH2H: fmt(base.ll), brier: fmt(sc.brier), acc: fmt(sc.acc), llOU: fmt(sc.llOU), llOUMkt: fmt(sc.llOUMkt),
+      n: sc.n, ll: fmt(sc.ll), llMkt: fmt(sc.llMkt), llSame: fmt(sc.llSame), nMkt: sc.nMkt, llNoH2H: fmt(base.ll), brier: fmt(sc.brier), acc: fmt(sc.acc), llOU: fmt(sc.llOU), llOUMkt: fmt(sc.llOUMkt),
       bets: sc.bets, roi: fmt(sc.roi), betsOU: sc.betsOU, roiOU: fmt(sc.roiOU), cal: sc.cal, stats,
     };
     log(`${lg.id}: n=${sc.n} ll=${sc.ll.toFixed(4)} mkt=${sc.llMkt?.toFixed(4)} acc=${(sc.acc * 100).toFixed(1)}% roi=${sc.roi?.toFixed(3)} (${sc.bets} bets) ${JSON.stringify(stats)}`);
@@ -489,7 +489,7 @@ async function main() {
         quick.set(f, [...r.p, ou, gg].map((x) => +x.toFixed(3)));
       } catch (e) { log(`  quick ${f.home}-${f.away}: ${e.message}`); }
     }
-    index.leagues.push({ id: lg.id, name: lg.name, country: lg.country, flag: lg.flag, teams: b.curTeams, hasStats: !!lg.fd, players: b.playersSrc, inj: b.absSrc, n: window.length, bt: { n: sc.n, ll: btOut.ll, llMkt: btOut.llMkt, acc: btOut.acc, roi: btOut.roi, bets: btOut.bets } });
+    index.leagues.push({ id: lg.id, name: lg.name, country: lg.country, flag: lg.flag, teams: b.curTeams, hasStats: !!lg.fd, players: b.playersSrc, inj: b.absSrc, n: window.length, bt: { n: sc.n, ll: btOut.ll, llMkt: btOut.llMkt, llSame: btOut.llSame, nMkt: sc.nMkt, acc: btOut.acc, roi: btOut.roi, bets: btOut.bets } });
     for (const f of b.fixtures) index.fixtures.push([lg.id, f.t || isoDay(f.d), f.home, f.away, quick.get(f) || null]);
   }
   // A league whose sources failed this week keeps last week's published file.
