@@ -6,11 +6,10 @@ on:
     - cron: '17 4 * * 2,5'   # Tuesday and Friday, 04:17 UTC
   workflow_dispatch:
   push:
-    branches: [claude/football-betting-analysis-app-vpdjbp]
-    paths: ['football/**', '!football/data/**', '.github/workflows/football.yml']
+    paths: ['football/**', '.github/workflows/football.yml']
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -41,14 +40,6 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
-      # Development only: keep a data snapshot on the work branch for local testing.
-      - name: Commit data snapshot (dev branch)
-        if: github.event_name == 'push'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f football/data
-          git commit -qm "Data snapshot" && git push || echo "no changes"
 
   deploy:
     if: github.ref_name == github.event.repository.default_branch

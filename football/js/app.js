@@ -91,7 +91,7 @@ function renderHome() {
 
 function fixturesHtml(filter) {
   const from = Date.now() - 2 * 3600e3; // hide games that are already over
-  const fx = state.index.fixtures.filter((f) => (filter === 'all' || f[0] === filter) && !(fixtureTime(f[1]) < from));
+  const fx = state.index.fixtures.filter((f) => (filter === 'all' || f[0] === filter) && !(fixtureTime(f[1]) && fixtureTime(f[1]) < from));
   if (!fx.length) return '<p class="empty">Δεν υπάρχουν προγραμματισμένοι αγώνες τις επόμενες μέρες.</p>';
   let html = '', lastDay = '';
   for (const [id, t, home, away, q] of fx.slice(0, 160)) {

@@ -254,6 +254,16 @@ async function fdFixtureRows() {
   return fdFixtures;
 }
 
+// football-data lists kick-offs in UK time.
+function ukToIso(day, time) {
+  const [hh, mm] = time.split(':').map(Number);
+  const guess = Date.UTC(1970, 0, 1 + day, hh, mm);
+  const london = new Date(guess).toLocaleString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const [lh, lm] = london.split(':').map(Number);
+  const offset = ((lh * 60 + lm) - (hh * 60 + mm) + 1440) % 1440; // 0 or 60 minutes
+  return new Date(guess - offset * 60000).toISOString();
+}
+
 // ---------------------------------------------------------------- build one league
 
 async function buildLeague(lg) {
@@ -294,7 +304,7 @@ async function buildLeague(lg) {
     const fx = await fdFixtureRows();
     fixtures = fx.filter((f) => (lg.fd ? f.div === lg.fd : f.country === lg.fdCountry) && f.d >= REF - 1 && f.d <= REF + 10)
       .filter((f) => ti.has(f.home) && ti.has(f.away))
-      .map((f) => ({ d: f.d, t: f.time ? `${isoDay(f.d)}T${f.time}:00+UK` : null, home: f.home, away: f.away, ref: f.ref }));
+      .map((f) => ({ d: f.d, t: f.time ? ukToIso(f.d, f.time) : null, home: f.home, away: f.away, ref: f.ref }));
   }
   if (lg.fd) {
     // referees appointed for upcoming games (published by football-data for some leagues)
