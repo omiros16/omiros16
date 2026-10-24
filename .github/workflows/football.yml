@@ -51,5 +51,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Turns Pages on (source: GitHub Actions) if it is still off; harmless once it is on.
+      - uses: actions/configure-pages@v5
+        continue-on-error: true
+        with:
+          enablement: true
       - id: deployment
         uses: actions/deploy-pages@v4
