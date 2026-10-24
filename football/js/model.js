@@ -191,19 +191,18 @@ export function fitRho(matches, lambdas, w) {
 
 // ---------------------------------------------------------------- league fit
 
-// Fits every rating for one league as of refDay. `prior` marks teams new to the league
-// (promoted), which start from weaker ratings instead of the league average.
-export function fitLeague(matches, nTeams, refDay, params, prior = {}) {
+// Goal ratings for one league as of refDay. `promoted` lists teams new to the league,
+// which start from weaker ratings instead of the league average.
+export function fitGoals(matches, nTeams, refDay, params, promoted = []) {
   const hl = params.halfLife ?? 180, wxg = params.wxg ?? 0.5, k = params.k ?? 4;
   const w = weightFn(refDay, hl);
   const past = matches.filter((m) => m[F.D] < refDay && num(m[F.HG]) && num(m[F.AG]));
   const proxy = fitShotProxy(past);
   const att0 = new Float64Array(nTeams).fill(1), def0 = new Float64Array(nTeams).fill(1);
-  for (const t of prior.promoted || []) { att0[t] = 0.82; def0[t] = 1.18; }
+  for (const t of promoted) { att0[t] = 0.82; def0[t] = 1.18; }
   const goals = fitRatings(past, nTeams, (m) => goalTarget(m, 0, wxg, proxy), (m) => goalTarget(m, 1, wxg, proxy), w, { k, att0, def0 });
   const lambdas = past.map((m) => [goals.bh * goals.att[m[F.H]] * goals.def[m[F.A]], goals.ba * goals.att[m[F.A]] * goals.def[m[F.H]]]);
   const rho = fitRho(past, lambdas, w);
-
   // Share of goals scored before half-time.
   let g1 = 0, gt = 0;
   for (const m of past) {
@@ -211,18 +210,22 @@ export function fitLeague(matches, nTeams, refDay, params, prior = {}) {
     const wt = w(m[F.D]);
     g1 += wt * (m[F.HHG] + m[F.HAG]); gt += wt * (m[F.HG] + m[F.AG]);
   }
-  const ht = gt > 0 ? g1 / gt : 0.445;
+  return { past, w, proxy, rho, ht: gt > 0 ? g1 / gt : 0.445, goals, params: { halfLife: hl, wxg, k } };
+}
 
+// Every rating for one league: goals plus corners, cards, shots and fouls, and referees.
+export function fitLeague(matches, nTeams, refDay, params, promoted = []) {
+  const { past, w, proxy, rho, ht, goals, params: used } = fitGoals(matches, nTeams, refDay, params, promoted);
   const stats = {};
   for (const [name, [ih, ia]] of Object.entries(STATS)) {
     const getH = (m) => m[ih], getA = (m) => m[ia];
-    const kk = name === 'reds' ? 12 : name === 'yellows' ? 6 : k;
+    const kk = name === 'reds' ? 12 : name === 'yellows' ? 6 : used.k;
     const fit = fitRatings(past, nTeams, getH, getA, w, { k: kk });
-    if (!fit.rows || !(fit.bh >= 0)) continue;
+    if (fit.rows < 30 || !(fit.bh >= 0)) continue;
     stats[name] = { bh: fit.bh, ba: fit.ba, att: Array.from(fit.att), def: Array.from(fit.def), r: fitDispersion(past, fit, getH, getA, w) };
   }
 
-  // Referee factor on cards (only leagues that publish referees).
+  // Referee factor on yellow cards (only leagues that publish referees).
   let refs = null;
   if (stats.yellows && past.some((m) => num(m[F.REF]))) {
     const y = stats.yellows, acc = new Map();
@@ -240,7 +243,7 @@ export function fitLeague(matches, nTeams, refDay, params, prior = {}) {
   }
 
   return {
-    refDay, params: { halfLife: hl, wxg, k }, proxy, rho, ht,
+    refDay, params: used, proxy, rho, ht,
     goals: { bh: goals.bh, ba: goals.ba, att: Array.from(goals.att), def: Array.from(goals.def), n: Array.from(goals.n) },
     stats, refs,
   };
