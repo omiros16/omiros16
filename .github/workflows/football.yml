@@ -1,0 +1,60 @@
+# Football analysis app: rebuilds the data twice a week (after the weekend and before it)
+# and publishes the app with GitHub Pages. Each run replaces the data, nothing accumulates.
+name: football-data
+on:
+  schedule:
+    - cron: '17 4 * * 2,5'   # Tuesday and Friday, 04:17 UTC
+  workflow_dispatch:
+  push:
+    paths: ['football/**', '.github/workflows/football.yml']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: football-data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Model tests
+        run: node football/test/model.test.mjs
+      - name: Download and fit data
+        run: |
+          # last published data, reused for any league whose sources fail this time
+          export PREV_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          node football/scripts/update.mjs football/data
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r football/index.html football/manifest.webmanifest football/sw.js football/icon.svg football/css football/js football/data _site/
+          du -sh _site _site/data
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    # scheduled runs always use the default branch (their event has no repository details)
+    if: github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Turns Pages on (source: GitHub Actions) if it is still off; harmless once it is on.
+      - uses: actions/configure-pages@v5
+        continue-on-error: true
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4
