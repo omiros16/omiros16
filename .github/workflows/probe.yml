@@ -1,0 +1,11 @@
+name: probe
+on:
+  push:
+    branches: [claude/football-betting-analysis-app-vpdjbp]
+    paths: [football/scripts/probe.py, .github/workflows/probe.yml]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 football/scripts/probe.py
