@@ -80,7 +80,7 @@ export function runLeague(lg, grid, refDay, h2hWeights) {
 }
 
 export function score(lg, rows) {
-  let ll = 0, llM = 0, nM = 0, brier = 0, acc = 0, llOU = 0, llOUM = 0, nOU = 0;
+  let ll = 0, llM = 0, llS = 0, nM = 0, brier = 0, acc = 0, llOU = 0, llOUM = 0, nOU = 0;
   const bets = { n: 0, profit: 0, nOU: 0, profitOU: 0 };
   const cal = Array.from({ length: 10 }, () => [0, 0, 0]); // count, sum p, hits
   for (const x of rows) {
@@ -95,6 +95,7 @@ export function score(lg, rows) {
     if (od && od.x12) {
       const q = implied(od.x12);
       llM -= Math.log(Math.max(1e-9, q[x.r])); nM++;
+      llS -= Math.log(Math.max(1e-9, p[x.r])); // the model on the same games
       for (let k = 0; k < 3; k++) {
         if (p[k] * od.x12[k] - 1 > 0.05) { bets.n++; bets.profit += k === x.r ? od.x12[k] - 1 : -1; }
       }
@@ -109,7 +110,7 @@ export function score(lg, rows) {
   const n = rows.length || 1;
   return {
     n: rows.length, ll: ll / n, brier: brier / n, acc: acc / n, llOU: llOU / n,
-    llMkt: nM ? llM / nM : null, nMkt: nM, llOUMkt: nOU ? llOUM / nOU : null,
+    llMkt: nM ? llM / nM : null, llSame: nM ? llS / nM : null, nMkt: nM, llOUMkt: nOU ? llOUM / nOU : null,
     bets: bets.n, roi: bets.n ? bets.profit / bets.n : null, betsOU: bets.nOU, roiOU: bets.nOU ? bets.profitOU / bets.nOU : null,
     cal: cal.map(([c, sp, h]) => (c ? [c, +(sp / c).toFixed(3), +(h / c).toFixed(3)] : [0, 0, 0])),
   };

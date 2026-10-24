@@ -540,13 +540,26 @@ function setAvail(side, name, v) {
 function renderInfo() {
   state.match = null;
   const { params, leagues } = state.index;
+  const fin = Number.isFinite;
+  const signed = (x, d) => (x > 0 ? '+' : '') + x.toFixed(d);
+  // Model and market are compared on the same games: those that have bookmaker odds.
+  const gapOf = (b) => (fin(b.llMkt) ? (fin(b.llSame) ? b.llSame : b.ll) - b.llMkt : null);
+  // One league's season of bets is too few to tell skill from luck, so its ROI is shown
+  // without colour; the all-leagues line is the one to read.
+  const roiCell = (roi, bets, strong) => (fin(roi)
+    ? `<td class="n" style="${strong ? `color:${roi > 0 ? 'var(--accent)' : 'var(--bad)'};font-weight:700` : 'color:var(--muted)'}">${signed(roi * 100, 0)}%<br><span class="tiny muted">${bets}</span></td>`
+    : '<td class="n">–</td>');
   const rows = leagues.map((l) => {
     const b = l.bt || {};
-    const gap = Number.isFinite(b.ll) && Number.isFinite(b.llMkt) ? b.ll - b.llMkt : null;
-    return `<tr><td>${l.flag} ${esc(l.country)}</td><td class="n">${b.n ?? '–'}</td><td class="n">${b.acc !== null && b.acc !== undefined ? Math.round(b.acc * 100) + '%' : '–'}</td>
-      <td class="n">${b.ll !== null && b.ll !== undefined ? b.ll.toFixed(3) : '–'}</td><td class="n">${gap !== null ? (gap > 0 ? '+' : '') + gap.toFixed(3) : '–'}</td>
-      <td class="n" style="color:${b.roi > 0 ? 'var(--accent)' : 'var(--bad)'}">${b.roi !== null && b.roi !== undefined ? (b.roi > 0 ? '+' : '') + Math.round(b.roi * 100) + '%' : '–'}</td></tr>`;
+    const gap = gapOf(b);
+    return `<tr><td>${l.flag} ${esc(l.country)}</td><td class="n">${b.n ?? '–'}</td><td class="n">${fin(b.acc) ? Math.round(b.acc * 100) + '%' : '–'}</td>
+      <td class="n">${fin(b.ll) ? b.ll.toFixed(3) : '–'}</td><td class="n">${gap !== null ? signed(gap, 3) : '–'}</td>${roiCell(b.roi, b.bets, false)}</tr>`;
   }).join('');
+  const sum = (f) => leagues.reduce((s, l) => s + (fin(f(l.bt || {})) ? f(l.bt || {}) : 0), 0);
+  const nAll = sum((b) => b.n), betsAll = sum((b) => b.bets), mAll = sum((b) => (fin(gapOf(b)) ? b.nMkt ?? b.n : NaN));
+  const total = `<tr style="font-weight:700"><td>Όλα μαζί</td><td class="n">${nAll}</td><td class="n">${Math.round((sum((b) => b.acc * b.n) / nAll) * 100)}%</td>
+    <td class="n">${(sum((b) => b.ll * b.n) / nAll).toFixed(3)}</td><td class="n">${mAll ? signed(sum((b) => gapOf(b) * (b.nMkt ?? b.n)) / mAll, 3) : '–'}</td>
+    ${roiCell(betsAll ? sum((b) => b.roi * b.bets) / betsAll : null, betsAll, true)}</tr>`;
   $app.innerHTML = `<section class="card info">
     <h2>Πώς δουλεύει</h2>
     <p>Για κάθε πρωτάθλημα το μοντέλο υπολογίζει δύναμη επίθεσης και άμυνας κάθε ομάδας από τους αγώνες των τελευταίων ~16 μηνών, με περισσότερο βάρος στους πρόσφατους. Μετράει γκολ μαζί με xG/σουτ στην εστία, που είναι πιο σταθερός δείκτης από τα σκέτα γκολ, και διορθώνει για το πόσο δυνατοί ήταν οι αντίπαλοι. Οι αποδόσεις των bookmakers δεν χρησιμοποιούνται στην πρόβλεψη.</p>
@@ -555,8 +568,8 @@ function renderInfo() {
     <p>Δύο φορές την εβδομάδα (Τρίτη και Παρασκευή) τα δεδομένα ανανεώνονται αυτόματα. Τα παλιά αρχεία αντικαθίστανται και κρατιέται σταθερό εύρος σεζόν, οπότε η εφαρμογή δεν βαραίνει με τον καιρό.</p>
     <h3>Αυτορρύθμιση (backtest)</h3>
     <p>Σε κάθε ενημέρωση το μοντέλο «ξαναπαίζει» τον τελευταίο χρόνο: για κάθε εβδομάδα κάνει πρόβλεψη μόνο με όσα ήξερε ως τότε. Διαλέγει έτσι μόνο του τις ρυθμίσεις. Τώρα: χρόνος ημιζωής φόρμας ${params.halfLife} ημέρες, βάρος xG ${Math.round(params.wxg * 100)}%, βάρος μεταξύ τους αγώνων ${params.h2h}.</p>
-    <div style="overflow-x:auto"><table class="list"><tr><th>Πρωτάθλημα</th><th class="n">Αγ.</th><th class="n">Εύστοχο φαβορί</th><th class="n">Log-loss</th><th class="n">vs αγορά</th><th class="n">ROI value</th></tr>${rows}</table></div>
-    <p class="muted small">Log-loss: όσο μικρότερο τόσο καλύτερο (το να μαντεύεις 33/33/33 δίνει 1.099). «vs αγορά»: διαφορά από τις αποδόσεις κλεισίματος των bookmakers (θετικό = η αγορά ήταν πιο ακριβής). «ROI value»: τι θα έβγαζε κάποιος ποντάροντας 1 μονάδα όπου το μοντέλο έβλεπε αξία πάνω από 5% στις μέσες αποδόσεις κλεισίματος.</p>
+    <div style="overflow-x:auto"><table class="list bt"><tr><th>Πρωτάθλημα</th><th class="n">Αγ.</th><th class="n">Εύστοχο φαβορί</th><th class="n">Log-loss</th><th class="n">vs αγορά</th><th class="n">ROI<br>(στοιχ.)</th></tr>${rows}${total}</table></div>
+    <p class="muted small">Log-loss: όσο μικρότερο τόσο καλύτερο (το να μαντεύεις 33/33/33 δίνει 1.099). «vs αγορά»: διαφορά από τις αποδόσεις κλεισίματος των bookmakers, στους ίδιους αγώνες (θετικό = η αγορά ήταν πιο ακριβής). «ROI»: τι θα έβγαζε κάποιος ποντάροντας 1 μονάδα όπου το μοντέλο έβλεπε αξία πάνω από 5% στις μέσες αποδόσεις κλεισίματος· μετράει μόνο αγώνες με αποδόσεις, και από κάτω φαίνεται σε πόσα στοιχήματα. Σε ένα πρωτάθλημα τα στοιχήματα είναι λίγα και ένα μεγάλο + ή − είναι κυρίως τύχη (π.χ. η Ρωσία)· η γραμμή «Όλα μαζί» είναι αυτή που λέει την αλήθεια.</p>
     <h3>Τι σημαίνει για τα χρήματά σου</h3>
     <p>Οι bookmakers έχουν γκανιότα (στον ΟΠΑΠ συχνά 6–10%), και οι αποδόσεις κλεισίματος είναι πολύ ακριβείς. Στα περισσότερα πρωταθλήματα το μοντέλο είναι λίγο λιγότερο ακριβές από την αγορά, και το τυφλό ποντάρισμα σε κάθε «value» ήταν χασοφόρο στο backtest. Καμία εφαρμογή δεν εγγυάται κέρδος. Χρησιμοποίησέ την ως δεύτερη γνώμη: για να εντοπίζεις αποδόσεις που ξεφεύγουν πολύ από τη δίκαιη τιμή, για να ελέγχεις αγορές όπως κόρνερ/κάρτες/σκόρερ, και για να ορίζεις ποντάρισμα με πειθαρχία. Βάλε όριο χρημάτων που αντέχεις να χάσεις.</p>
     <p class="muted small">Πηγές: football-data.co.uk (αποτελέσματα, στατιστικά, xG), Understat (xG παικτών), ESPN (στατιστικά παικτών), FotMob και Fantasy Premier League (απουσίες, πρόγραμμα).</p>
