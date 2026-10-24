@@ -108,12 +108,20 @@ async function understat(lg, fdTeams, rows, curTeams) {
   }
   log(`  understat: ${cur.players?.length || 0} players, xG filled for ${filled} matches`);
   const players = [];
+  const titleCounts = new Map();
   for (const p of cur.players || []) {
+    titleCounts.set(p.team_title, (titleCounts.get(p.team_title) || 0) + 1);
     const teamTitle = String(p.team_title).split(',').pop().trim();
     const t = map.get(teamTitle);
     if (t === undefined || !curTeams.includes(fdTeams[t])) continue;
     const pos = String(p.position || 'M').split(' ')[0];
     players.push({ name: p.player_name, team: fdTeams[t], pos: pos === 'GK' ? 'G' : pos[0], gp: +p.games, min: +p.time, g: +p.goals, xg: +p.xG, a: +p.assists, xa: +p.xA, sh: +p.shots, y: +p.yellow_cards, r: +p.red_cards });
+  }
+  if (process.env.DEBUG_US) {
+    log(`  DEBUG titles(dates): ${[...titles].map((t) => `${t}=>${map.has(t) ? fdTeams[map.get(t)] : '?'}`).join(' | ')}`);
+    log(`  DEBUG team_title counts: ${[...titleCounts].map(([t, c]) => `${t}:${c}`).join(' | ')}`);
+    const d = (cur.players || []).find((p) => /Demb|Akinfeev|Kvarats/.test(p.player_name));
+    if (d) log(`  DEBUG sample: ${JSON.stringify(d)}`);
   }
   return players;
 }
