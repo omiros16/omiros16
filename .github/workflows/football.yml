@@ -29,9 +29,10 @@ jobs:
       - name: Model tests
         run: node football/test/model.test.mjs
       - name: Download and fit data
-        env:
-          PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
-        run: node football/scripts/update.mjs football/data
+        run: |
+          # last published data, reused for any league whose sources fail this time
+          export PREV_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          node football/scripts/update.mjs football/data
       - name: Assemble site
         run: |
           mkdir -p _site
@@ -42,7 +43,8 @@ jobs:
           path: _site
 
   deploy:
-    if: github.ref_name == github.event.repository.default_branch
+    # scheduled runs always use the default branch (their event has no repository details)
+    if: github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch
     needs: build
     runs-on: ubuntu-latest
     environment:
