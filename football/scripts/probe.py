@@ -4,7 +4,7 @@ import json, re, sys, urllib.request, gzip
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
 def get(url, headers=None):
-    h = {"User-Agent": UA, "Accept-Encoding": "gzip"}
+    h = {"User-Agent": UA, "Accept-Encoding": "gzip", "Accept-Language": "en-US,en;q=0.9", "Accept": "*/*"}
     h.update(headers or {})
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=30) as r:
@@ -18,65 +18,75 @@ def get(url, headers=None):
 def show(name, url, n=1500, headers=None):
     st, body, hd = get(url, headers)
     print(f"\n===== {name} [{st}] len={len(body)} cors={hd.get('Access-Control-Allow-Origin')} {url}")
-    print(body[:n])
+    if n: print(body[:n])
     return body
 
-for code in ["E0", "SC0", "D1", "I1", "SP1", "F1", "N1", "B1", "P1", "T1", "G1"]:
-    b = show("fd " + code, f"https://www.football-data.co.uk/mmz4281/2627/{code}.csv", 600 if code == "E0" else 250)
-b = show("fd E0 2526 tail", "https://www.football-data.co.uk/mmz4281/2526/E0.csv", 0)
-print(b.splitlines()[0] if b else "")
-print("rows", len(b.splitlines()))
-for c in ["AUT", "SWZ", "DNK", "POL", "ROU", "NOR", "SWE", "FIN", "IRL", "RUS"]:
-    show("fd new " + c, f"https://www.football-data.co.uk/new/{c}.csv", 300)
-show("fd fixtures", "https://www.football-data.co.uk/fixtures.csv", 800)
+XHR = {"X-Requested-With": "XMLHttpRequest", "Referer": "https://understat.com/"}
+u = json.loads(show("understat EPL", "https://understat.com/getLeagueData/EPL/2026", 0, XHR))
+print("keys", list(u.keys()))
+for k, v in u.items():
+    print(k, type(v).__name__, len(v))
+    if isinstance(v, list): print(json.dumps(v[:2])[:1500])
+    elif isinstance(v, dict): print(json.dumps(list(v.items())[:1])[:1200])
+for lg in ["La_liga", "Bundesliga", "Serie_A", "Ligue_1", "RFPL"]:
+    b = show("understat " + lg, f"https://understat.com/getLeagueData/{lg}/2026", 0, XHR)
+    try:
+        j = json.loads(b); print(lg, {k: len(v) for k, v in j.items()})
+    except Exception as e: print(lg, "err", e)
+show("understat 2025 EPL", "https://understat.com/getLeagueData/EPL/2025", 200, XHR)
+show("understat match", "https://understat.com/getMatchData/28000", 300, XHR)
+show("understat team", "https://understat.com/getTeamData/Arsenal/2026", 600, XHR)
+show("understat player", "https://understat.com/getPlayerData/1250", 600, XHR)
 
-show("clubelo", "http://api.clubelo.com/2026-10-20", 600)
-show("clubelo fixtures", "http://api.clubelo.com/Fixtures", 600)
+f = json.loads(show("fpl", "https://fantasy.premierleague.com/api/bootstrap-static/", 0))
+print("fpl keys", list(f.keys()))
+el = f["elements"]
+print("n elements", len(el), "keys", list(el[0].keys()))
+inj = [e for e in el if e.get("status") != "a"]
+print("non-available", len(inj))
+for e in inj[:8]:
+    print({k: e.get(k) for k in ["web_name", "team", "status", "news", "chance_of_playing_next_round", "minutes", "goals_scored", "element_type"]})
+print("teams", [(t["id"], t["name"]) for t in f["teams"]])
+show("fpl fixtures", "https://fantasy.premierleague.com/api/fixtures/?future=1", 500)
 
-s = show("espn scoreboard", "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=20261017-20261020", 0)
+show("espn scoreboard plain", "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard", 300)
+s = show("espn scoreboard day", "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=20261018", 0)
 try:
     j = json.loads(s)
-    ev = j["events"][0]
-    print("event keys", list(ev.keys()))
-    comp = ev["competitions"][0]
-    print("comp keys", list(comp.keys()))
-    print("competitor0", json.dumps(comp["competitors"][0])[:2500])
-    print("details", json.dumps(comp.get("details", []))[:2500])
-    evid = ev["id"]
-    teamid = comp["competitors"][0]["team"]["id"]
-    sm = show("espn summary", f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary?event={evid}", 0)
-    sj = json.loads(sm)
+    ev = j["events"][0]; comp = ev["competitions"][0]
+    print("competitor0", json.dumps(comp["competitors"][0])[:2000])
+    print("details", json.dumps(comp.get("details", []))[:1500])
+    evid = ev["id"]; teamid = comp["competitors"][0]["team"]["id"]
+    sj = json.loads(show("espn summary", f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/summary?event={evid}", 0))
     print("summary keys", list(sj.keys()))
-    for k in ["boxscore", "rosters", "keyEvents", "injuries", "headToHeadGames", "gameInfo", "odds"]:
-        print("  ", k, json.dumps(sj.get(k))[:1500])
-    r = show("espn roster", f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/teams/{teamid}/roster", 0)
-    rj = json.loads(r)
-    print("roster keys", list(rj.keys()))
+    for k in ["boxscore", "rosters", "keyEvents", "injuries", "headToHeadGames", "gameInfo"]:
+        print("  ", k, json.dumps(sj.get(k))[:1200])
+    rj = json.loads(show("espn roster", f"https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/teams/{teamid}/roster", 0))
     ath = rj.get("athletes", [])
-    print("n athletes", len(ath))
+    print("roster keys", list(rj.keys()), "n", len(ath))
     if ath:
-        print(json.dumps(ath[0])[:3000])
-        inj = [a for a in ath if a.get("injuries")]
-        print("with injuries", len(inj), json.dumps([a.get("injuries") for a in inj[:3]])[:1500])
+        print(json.dumps(ath[0])[:2500])
+        print("with injuries", sum(1 for a in ath if a.get("injuries")), json.dumps([a.get("injuries") for a in ath if a.get("injuries")][:3])[:1200])
+    show("espn core team injuries", f"https://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/teams/{teamid}/injuries", 600)
 except Exception as e:
-    print("espn parse error", e)
-show("espn injuries core", "https://sports.core.api.espn.com/v2/sports/soccer/leagues/eng.1/injuries", 800)
-show("espn teams", "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/teams", 400)
-for lg in ["aut.1", "sui.1", "den.1", "pol.1", "cze.1", "gre.1", "tur.1", "sco.1", "rou.1", "nor.1", "swe.1"]:
-    s = show("espn " + lg, f"https://site.api.espn.com/apis/site/v2/sports/soccer/{lg}/scoreboard?dates=20261001-20261020", 0)
+    print("espn err", e)
+for lg in ["gre.1", "ned.1", "por.1", "tur.1", "bel.1", "sco.1"]:
+    s = show("espn " + lg, f"https://site.api.espn.com/apis/site/v2/sports/soccer/{lg}/scoreboard?dates=20261018", 0)
     try:
         j = json.loads(s); e = j.get("events", [])
-        st = e[0]["competitions"][0]["competitors"][0].get("statistics") if e else None
-        print(lg, "events", len(e), "stats", [x.get("name") for x in (st or [])])
+        c = e[0]["competitions"][0]["competitors"][0] if e else {}
+        print(lg, "events", len(e), "stats", [x.get("name") for x in c.get("statistics", [])], "details", len(e[0]["competitions"][0].get("details", [])) if e else 0)
     except Exception as ex:
         print(lg, "err", ex)
 
-u = show("understat league", "https://understat.com/league/EPL/2026", 300)
-print("has playersData", "playersData" in u, "datesData" in u)
-show("understat ajax", "https://understat.com/getLeagueData/EPL/2026", 600, {"X-Requested-With": "XMLHttpRequest", "Referer": "https://understat.com/league/EPL/2026"})
-show("fpl", "https://fantasy.premierleague.com/api/bootstrap-static/", 300)
-show("transfermarkt", "https://www.transfermarkt.com/premier-league/verletztespieler/wettbewerb/GB1", 300)
-show("sofascore", "https://api.sofascore.com/api/v1/sport/football/scheduled-events/2026-10-24", 300)
-show("fotmob", "https://www.fotmob.com/api/leagues?id=47", 300)
-show("fbref", "https://fbref.com/en/comps/9/Premier-League-Stats", 300)
-show("openfootball", "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/en.1.json", 300)
+show("rotowire", "https://www.rotowire.com/soccer/tables/injury-report.php?league=EPL", 800)
+show("rotowire LIGA", "https://www.rotowire.com/soccer/tables/injury-report.php?league=LIGA", 300)
+show("sportsgambler", "https://www.sportsgambler.com/injuries/football/england-premier-league/", 300)
+b = show("sportsgambler greece", "https://www.sportsgambler.com/injuries/football/greece-super-league/", 0)
+print("sg greece has inj-row", b.count("inj-row"), b.count("injury"), b[b.find("inj-"):b.find("inj-")+1500] if "inj-" in b else b[:600])
+show("transfermarkt2", "https://www.transfermarkt.com/super-league-1/verletztespieler/wettbewerb/GR1", 300, {"Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"})
+show("tm api", "https://tmapi-alpha.transfermarkt.technology/competition/GB1", 300)
+show("fotmob data", "https://www.fotmob.com/api/data/leagues?id=47", 300)
+show("clubelo", "http://api.clubelo.com/2026-10-20", 400)
+show("clubelo2", "http://clubelo.com/API", 300)
+show("physioroom", "https://www.physioroom.com/news/english_premier_league/epl_injury_table.php", 300)
