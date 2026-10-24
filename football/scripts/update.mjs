@@ -80,7 +80,7 @@ async function loadResults(lg) {
 
 // ---------------------------------------------------------------- Understat (xG + players)
 
-async function understat(lg, fdTeams, rows, curTeams) {
+async function understat(lg, fdTeams, rows, curTeams, rosterOf) {
   if (!lg.us) return null;
   const { year } = seasonCodes();
   const cur = await getJson(`https://understat.com/getLeagueData/${lg.us}/${year}`, XHR_US);
@@ -106,29 +106,40 @@ async function understat(lg, fdTeams, rows, curTeams) {
     const c = (byKey.get(`${r.home}|${r.away}`) || []).find(([d]) => Math.abs(d - r.d) <= 1);
     if (c) { r.v[16] = c[1]; r.v[17] = c[2]; filled++; }
   }
-  log(`  understat: ${cur.players?.length || 0} players, xG filled for ${filled} matches`);
+  // A player who appeared for more than one club gets a comma-separated, alphabetical
+  // team_title, so it does not say which club he is at now. Understat also has matches whose
+  // rosters were credited to both sides (dozens of players listed under the same two clubs).
+  // Settle those against the current ESPN rosters and leave out what cannot be settled.
+  const titleCount = new Map();
+  for (const p of cur.players || []) titleCount.set(p.team_title, (titleCount.get(p.team_title) || 0) + 1);
   const players = [];
-  const titleCounts = new Map();
+  let settled = 0, dropped = 0;
   for (const p of cur.players || []) {
-    titleCounts.set(p.team_title, (titleCounts.get(p.team_title) || 0) + 1);
-    const teamTitle = String(p.team_title).split(',').pop().trim();
-    const t = map.get(teamTitle);
-    if (t === undefined || !curTeams.includes(fdTeams[t])) continue;
+    const cands = [...new Set(String(p.team_title).split(',').map((t) => map.get(t.trim())).filter((t) => t !== undefined).map((t) => fdTeams[t]))]
+      .filter((t) => curTeams.includes(t));
+    let team = cands.length === 1 ? cands[0] : null;
+    if (cands.length > 1) {
+      let best = null, bs = 0;
+      for (const r of (await rosterOf()) || []) {
+        if (!cands.includes(r.team)) continue;
+        const sc = playerSimilarity(p.player_name, r.name);
+        if (sc > bs) { bs = sc; best = r.team; }
+      }
+      if (bs >= 0.85) { team = best; settled++; } else dropped++;
+    }
+    if (!team) continue;
     const pos = String(p.position || 'M').split(' ')[0];
-    players.push({ name: p.player_name, team: fdTeams[t], pos: pos === 'GK' ? 'G' : pos[0], gp: +p.games, min: +p.time, g: +p.goals, xg: +p.xG, a: +p.assists, xa: +p.xA, sh: +p.shots, y: +p.yellow_cards, r: +p.red_cards });
+    players.push({ name: p.player_name, team, pos: pos === 'GK' ? 'G' : pos[0], gp: +p.games, min: +p.time, g: +p.goals, xg: +p.xG, a: +p.assists, xa: +p.xA, sh: +p.shots, y: +p.yellow_cards, r: +p.red_cards });
   }
-  if (process.env.DEBUG_US) {
-    log(`  DEBUG titles(dates): ${[...titles].map((t) => `${t}=>${map.has(t) ? fdTeams[map.get(t)] : '?'}`).join(' | ')}`);
-    log(`  DEBUG team_title counts: ${[...titleCounts].map(([t, c]) => `${t}:${c}`).join(' | ')}`);
-    const d = (cur.players || []).find((p) => /Demb|Akinfeev|Kvarats/.test(p.player_name));
-    if (d) log(`  DEBUG sample: ${JSON.stringify(d)}`);
-  }
+  const clusters = [...titleCount].filter(([t, c]) => t.includes(',') && c >= 4).map(([t, c]) => `${t} (${c})`);
+  log(`  understat: ${cur.players?.length || 0} players, xG filled for ${filled} matches, multi-club players settled ${settled}, left out ${dropped}${clusters.length ? `, suspicious clusters: ${clusters.join('; ')}` : ''}`);
   return players;
 }
 
 // ---------------------------------------------------------------- ESPN rosters (players elsewhere)
 
-async function espnPlayers(lg, fdTeams) {
+// Every athlete's current club, plus season stats for those who have played.
+async function espnRosters(lg, fdTeams) {
   if (!lg.espn) return null;
   const t = await getJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${lg.espn}/teams`);
   const teams = t?.sports?.[0]?.leagues?.[0]?.teams?.map((x) => x.team) || [];
@@ -136,12 +147,13 @@ async function espnPlayers(lg, fdTeams) {
   const map = matchNames(teams.map((x) => x.displayName), fdTeams);
   const unmatched = teams.filter((x) => !map.has(x.displayName)).map((x) => x.displayName);
   if (unmatched.length) log(`  espn unmatched teams: ${unmatched.join(', ')}`);
-  const players = [];
+  const players = [], roster = [];
   await pool(teams, 4, async (tm) => {
     const ti = map.get(tm.displayName);
     if (ti === undefined) return;
     const r = await getJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${lg.espn}/teams/${tm.id}/roster`);
     for (const a of r?.athletes || []) {
+      roster.push({ name: a.displayName, team: fdTeams[ti] });
       const st = {};
       for (const c of a.statistics?.splits?.categories || []) for (const s of c.stats || []) st[s.name] = s.value;
       const apps = st.appearances || 0;
@@ -151,8 +163,8 @@ async function espnPlayers(lg, fdTeams) {
       players.push({ name: a.displayName, team: fdTeams[ti], pos: pos[0] === 'G' ? 'G' : pos[0], gp: apps, min: Math.round((apps - subs) * 82 + subs * 22), g: st.totalGoals || 0, xg: null, a: st.goalAssists || 0, xa: null, sh: st.totalShots ?? null, y: st.yellowCards || 0, r: st.redCards || 0 });
     }
   });
-  log(`  espn: ${players.length} players`);
-  return players;
+  log(`  espn: ${roster.length} squad players, ${players.length} with appearances`);
+  return { players, roster };
 }
 
 // ---------------------------------------------------------------- FotMob (fixtures + absences)
@@ -173,20 +185,34 @@ async function fotmob(lg, fdTeams) {
   log(`  fotmob ${L.details?.name || '?'} (${L.details?.country || '?'}): ${all.length} matches${unmatched.length ? `, unmatched: ${unmatched.join(', ')}` : ''}`);
   if (map.size < Math.min(8, names.size * 0.6)) { log('  fotmob league looks wrong, skipped'); return null; }
   const now = Date.now();
-  const upcoming = all.filter((m) => {
-    const t = Date.parse(m.status?.utcTime);
-    return !m.status?.finished && !m.status?.cancelled && t > now - 3 * 3600e3 && t < now + 10 * 86400e3;
-  });
-  const fixtures = [], absences = new Map(), types = new Set();
+  const when = (m) => Date.parse(m.status?.utcTime);
+  const teamsOf = (m) => [map.get(m.home?.name), map.get(m.away?.name)];
+
+  // finished games, to fill in what football-data has not published yet
+  const results = [];
+  for (const m of all) {
+    const st = m.status || {};
+    const sc = /^(\d+)\s*-\s*(\d+)$/.exec(st.scoreStr || '');
+    const [h, a] = teamsOf(m);
+    if (!st.finished || st.cancelled || st.awarded || !sc || h === undefined || a === undefined) continue;
+    results.push({ d: Math.floor(when(m) / 86400000), home: fdTeams[h], away: fdTeams[a], hg: +sc[1], ag: +sc[2] });
+  }
+  const starts = all.map(when).filter(Number.isFinite);
+  const seasonStart = starts.length ? Math.floor(Math.min(...starts) / 86400000) : null;
+
+  const upcoming = all.filter((m) => !m.status?.finished && !m.status?.cancelled && when(m) > now - 3 * 3600e3 && when(m) < now + 10 * 86400e3);
+  const fixtures = [], absences = new Map(), absAt = new Map(), types = new Set();
   await pool(upcoming, 4, async (m) => {
-    const h = map.get(m.home.name), a = map.get(m.away.name);
+    const [h, a] = teamsOf(m);
     if (h === undefined || a === undefined) return;
     fixtures.push({ t: m.status.utcTime, home: fdTeams[h], away: fdTeams[a] });
     const D = await getJson(`https://www.fotmob.com/api/data/matchDetails?matchId=${m.id}`);
     const lu = D?.content?.lineup;
     for (const [side, team] of [['homeTeam', fdTeams[h]], ['awayTeam', fdTeams[a]]]) {
       const list = lu?.[side]?.unavailable;
-      if (!Array.isArray(list)) continue;
+      // a team with two games in the window keeps the list for the nearer one
+      if (!Array.isArray(list) || (absAt.has(team) && absAt.get(team) <= when(m))) continue;
+      absAt.set(team, when(m));
       absences.set(team, list.map((u) => {
         const ty = u.unavailability?.type || 'injury';
         types.add(ty);
@@ -194,8 +220,25 @@ async function fotmob(lg, fdTeams) {
       }));
     }
   });
-  log(`  fotmob: ${fixtures.length} upcoming, absences for ${absences.size} teams, types: ${[...types].join(',')}`);
-  return { fixtures, absences };
+  log(`  fotmob: ${results.length} results, ${fixtures.length} upcoming, absences for ${absences.size} teams, types: ${[...types].join(',')}`);
+  return { fixtures, absences, results, seasonStart };
+}
+
+// Adds FotMob results that football-data does not have yet (it can lag days, or stop
+// updating a league), as long as both describe the same season.
+function mergeResults(rows, fm, curSeason) {
+  if (!fm?.results?.length || fm.seasonStart === null) return 0;
+  const cur = rows.filter((r) => r.season === curSeason);
+  if (!cur.length || Math.abs(fm.seasonStart - Math.min(...cur.map((r) => r.d))) > 25) return 0;
+  const have = new Set(rows.map((r) => `${r.home}|${r.away}|${r.d}`));
+  let added = 0;
+  for (const m of fm.results) {
+    if ([-1, 0, 1].some((k) => have.has(`${m.home}|${m.away}|${m.d + k}`))) continue;
+    rows.push({ d: m.d, season: curSeason, home: m.home, away: m.away, ref: null, v: [m.hg, m.ag, ...new Array(16).fill(null)], odds: { x12: null, ou: null }, fotmob: true });
+    added++;
+  }
+  rows.sort((a, b) => a.d - b.d);
+  return added;
 }
 
 // ---------------------------------------------------------------- Fantasy Premier League
@@ -285,17 +328,24 @@ async function buildLeague(lg) {
   const refsList = [...new Set(rows.map((r) => r.ref).filter(Boolean))];
   const ri = new Map(refsList.map((r, i) => [r, i]));
 
+  const fm = await fotmob(lg, curTeams).catch((e) => (log('  fotmob failed', e.message), null));
+  const added = mergeResults(rows, fm, curSeason);
+  if (added) log(`  added ${added} results from FotMob (latest football-data game: ${isoDay(Math.max(...rows.filter((r) => !r.fotmob).map((r) => r.d)))})`);
+
+  // ESPN rosters are fetched once, when needed (players outside Understat, or to settle
+  // Understat players listed under two clubs).
+  let espnP = null;
+  const espn = () => (espnP ??= espnRosters(lg, curTeams).catch((e) => (log('  espn failed', e.message), null)));
   // Understat also covers last season, so relegated sides must be matchable too.
   const recentTeams = [...new Set(rows.filter((r) => r.d >= REF - MODEL_DAYS).flatMap((r) => [r.home, r.away]))];
-  const usPlayers = await understat(lg, recentTeams, rows, curTeams).catch((e) => (log('  understat failed', e.message), null));
+  const usPlayers = await understat(lg, recentTeams, rows, curTeams, async () => (await espn())?.roster).catch((e) => (log('  understat failed', e.message), null));
   const tuple = (r) => [r.d, ti.get(r.home), ti.get(r.away), ...r.v.slice(0, 16), r.v[16], r.v[17], r.ref ? ri.get(r.ref) : null];
   const all = rows.map(tuple);
 
   // backtest data (all seasons downloaded)
   const bt = prepare({ id: lg.id, matches: all, nTeams: teams.length, season: rows.map((r) => r.season), odds: rows.map((r) => r.odds) });
 
-  const players = usPlayers || (await espnPlayers(lg, curTeams).catch((e) => (log('  espn failed', e.message), null))) || [];
-  const fm = await fotmob(lg, curTeams).catch((e) => (log('  fotmob failed', e.message), null));
+  const players = usPlayers || (await espn())?.players || [];
   const fp = lg.fpl ? await fpl(curTeams).catch((e) => (log('  fpl failed', e.message), null)) : null;
   let absSrc = fp ? 'fpl' : fm && fm.absences.size ? 'fotmob' : null;
   let absences = fp?.absences || (fm && fm.absences.size ? fm.absences : null);
@@ -339,6 +389,10 @@ async function buildLeague(lg) {
     }
   }
   if (total) log(`  absences: ${total} (${matched} linked to player stats) via ${absSrc}`);
+  if (plist.length) {
+    const thin = curTeams.filter((t) => plist.filter((p) => p.team === t).length < 12);
+    if (thin.length) log(`  WARNING few players for: ${thin.map((t) => `${t} (${plist.filter((p) => p.team === t).length})`).join(', ')}`);
+  }
 
   return {
     lg, rows, teams, curTeams, ti, refsList, all, bt, curSeason,

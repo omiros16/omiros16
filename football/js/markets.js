@@ -31,7 +31,7 @@ function asian(margin, line) {
   return { pw, pl };
 }
 
-function countMarket(id, title, cat, mh, ma, rh, ra, lines, teamLines, names, max, extra = []) {
+function countMarket(id, title, more, cat, mh, ma, rh, ra, lines, teamLines, names, max, extra = []) {
   const ph = nbPmf(mh, rh, max), pa = nbPmf(ma, ra, max), pt = convolve(ph, pa);
   const items = [];
   for (const L of lines) items.push(item(`Over ${fmt(L)}`, over(pt, L)), item(`Under ${fmt(L)}`, 1 - over(pt, L)));
@@ -48,7 +48,7 @@ function countMarket(id, title, cat, mh, ma, rh, ra, lines, teamLines, names, ma
   for (let i = 0; i < ph.length; i++) for (let j = 0; j < pa.length; j++) {
     if (i > j) p1 += ph[i] * pa[j]; else if (i === j) px += ph[i] * pa[j];
   }
-  groups.push({ id: id + '1X2', t: `Περισσότερα ${title.toLowerCase()}`, cat, items: [item(`1 (${names[0]})`, p1), item('Ίσα', px), item(`2 (${names[1]})`, 1 - p1 - px)] });
+  groups.push({ id: id + '1X2', t: more, cat, items: [item(`1 (${names[0]})`, p1), item('Ίσα', px), item(`2 (${names[1]})`, 1 - p1 - px)] });
   for (const e of extra) groups.push(e(ph, pa, pt));
   return groups;
 }
@@ -181,13 +181,14 @@ export function buildMarkets(pr) {
   const S = pr.stats || {};
   if (S.corners) {
     const c = S.corners;
-    G.push(...countMarket('corners', 'Κόρνερ', 'corners', c.mh, c.ma, c.r, c.r, [7.5, 8.5, 9.5, 10.5, 11.5, 12.5], [3.5, 4.5, 5.5, 6.5], names, 40, [
+    G.push(...countMarket('corners', 'Κόρνερ', 'Περισσότερα κόρνερ', 'corners', c.mh, c.ma, c.r, c.r, [7.5, 8.5, 9.5, 10.5, 11.5, 12.5], [3.5, 4.5, 5.5, 6.5], names, 40, [
       (ph, pa) => {
         const items = [];
+        const sg = (v) => (v > 0 ? `+${v}` : `${v}`);
         for (const L of [-2.5, -1.5, 1.5, 2.5]) {
           let pw = 0;
           for (let i = 0; i < ph.length; i++) for (let j = 0; j < pa.length; j++) if (i - j + L > 0) pw += ph[i] * pa[j];
-          items.push(item(`${H} ${L > 0 ? '+' : ''}${L} κόρνερ`, pw));
+          items.push(item(`${H} ${sg(L)} κόρνερ`, pw), item(`${A} ${sg(-L)} κόρνερ`, 1 - pw));
         }
         return { id: 'cornersAH', t: 'Χάντικαπ κόρνερ', cat: 'corners', items };
       },
@@ -198,7 +199,7 @@ export function buildMarkets(pr) {
     const y = S.yellows, rd = S.reds;
     const rh = rd ? rd.mh : 0.07, ra = rd ? rd.ma : 0.08;
     // A card = yellow or red (as most bookmakers count them); reds are rare enough to treat as Poisson.
-    const cardsGroup = countMarket('cards', 'Κάρτες', 'cards', y.mh + rh, y.ma + ra, y.r, y.r, [2.5, 3.5, 4.5, 5.5, 6.5], [0.5, 1.5, 2.5, 3.5], names, 25);
+    const cardsGroup = countMarket('cards', 'Κάρτες', 'Περισσότερες κάρτες', 'cards', y.mh + rh, y.ma + ra, y.r, y.r, [2.5, 3.5, 4.5, 5.5, 6.5], [0.5, 1.5, 2.5, 3.5], names, 25);
     G.push(...cardsGroup);
     const pRed = 1 - Math.exp(-(rh + ra));
     G.push({ id: 'red', t: 'Κόκκινη κάρτα', cat: 'cards', items: [item('Ναι, κόκκινη στον αγώνα', pRed), item('Όχι', 1 - pRed), item(`${H} παίρνει κόκκινη`, 1 - Math.exp(-rh)), item(`${A} παίρνει κόκκινη`, 1 - Math.exp(-ra))] });
@@ -215,15 +216,15 @@ export function buildMarkets(pr) {
   }
   if (S.shots) {
     const s = S.shots;
-    G.push(...countMarket('shots', 'Σουτ', 'shots', s.mh, s.ma, s.r, s.r, [20.5, 22.5, 24.5, 26.5, 28.5], [9.5, 11.5, 13.5, 15.5], names, 80).slice(0, 2));
+    G.push(...countMarket('shots', 'Σουτ', 'Περισσότερα σουτ', 'shots', s.mh, s.ma, s.r, s.r, [20.5, 22.5, 24.5, 26.5, 28.5], [9.5, 11.5, 13.5, 15.5], names, 80).slice(0, 2));
   }
   if (S.sot) {
     const s = S.sot;
-    G.push(...countMarket('sot', 'Σουτ στην εστία', 'shots', s.mh, s.ma, s.r, s.r, [6.5, 7.5, 8.5, 9.5, 10.5], [2.5, 3.5, 4.5, 5.5], names, 40).slice(0, 3));
+    G.push(...countMarket('sot', 'Σουτ στην εστία', 'Περισσότερα σουτ στην εστία', 'shots', s.mh, s.ma, s.r, s.r, [6.5, 7.5, 8.5, 9.5, 10.5], [2.5, 3.5, 4.5, 5.5], names, 40).slice(0, 3));
   }
   if (S.fouls) {
     const s = S.fouls;
-    G.push(...countMarket('fouls', 'Φάουλ', 'shots', s.mh, s.ma, s.r, s.r, [19.5, 21.5, 23.5, 25.5, 27.5], [9.5, 10.5, 11.5, 12.5, 13.5], names, 80).slice(0, 2));
+    G.push(...countMarket('fouls', 'Φάουλ', 'Περισσότερα φάουλ', 'shots', s.mh, s.ma, s.r, s.r, [19.5, 21.5, 23.5, 25.5, 27.5], [9.5, 10.5, 11.5, 12.5, 13.5], names, 80).slice(0, 2));
   }
 
   // Players

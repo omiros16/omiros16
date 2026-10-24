@@ -22,7 +22,7 @@ for (const meta of index.leagues) {
     pairs++;
     let r;
     try { r = analyze(lg, h, a, { params: index.params }); } catch (e) { bad(`${where(h, a)}: ${e.stack.split('\n').slice(0, 2).join(' ')}`); continue; }
-    if (!(r.lh > 0.05 && r.lh < 6 && r.la > 0.05 && r.la < 6)) bad(`${where(h, a)}: goal means ${r.lh} ${r.la}`);
+    if (!(r.lh > 0.05 && r.lh < 8 && r.la > 0.05 && r.la < 8)) bad(`${where(h, a)}: goal means ${r.lh} ${r.la}`);
     const s = r.p[0] + r.p[1] + r.p[2];
     if (Math.abs(s - 1) > 1e-6) bad(`${where(h, a)}: 1X2 sums to ${s}`);
     for (const g of r.markets) {

@@ -32,8 +32,9 @@ jobs:
         run: |
           # last published data, reused for any league whose sources fail this time
           export PREV_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
-          export DEBUG_US=1
           node football/scripts/update.mjs football/data
+      - name: Check the new data
+        run: node football/test/data.test.mjs football/data
       - name: Assemble site
         run: |
           mkdir -p _site

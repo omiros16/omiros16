@@ -12,6 +12,23 @@ const store = {
   set(k, v) { try { localStorage.setItem('fa.' + k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
+// Odds and absence changes typed for a match are kept for two weeks (at most 40 matches),
+// so what the phone stores does not grow over time.
+const SAVED_DAYS = 14, SAVED_MAX = 40;
+function saved(key) {
+  return store.get('saved', {})[key] || {};
+}
+function save(key, part, value) {
+  const all = store.get('saved', {});
+  all[key] = { ...(all[key] || {}), [part]: value, t: Date.now() };
+  const keep = Object.entries(all).filter(([, v]) => v.t > Date.now() - SAVED_DAYS * 864e5)
+    .sort((x, y) => y[1].t - x[1].t).slice(0, SAVED_MAX);
+  store.set('saved', Object.fromEntries(keep));
+}
+try { // entries written by the first version of the app
+  for (const k of Object.keys(localStorage)) if (/^fa\.(odds|ovr)\|/.test(k)) localStorage.removeItem(k);
+} catch { /* storage unavailable */ }
+
 // ---------------------------------------------------------------- helpers
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -25,7 +42,7 @@ const shortDate = (d) => new Date(d * 86400000).toLocaleDateString('el-GR', { da
 const parseOdds = (s) => { const v = parseFloat(String(s).replace(',', '.')); return v > 1 ? v : null; };
 const fixtureTime = (t) => { const d = new Date(t); return Number.isNaN(+d) ? null : d; };
 const leagueMeta = (id) => state.index.leagues.find((l) => l.id === id);
-const matchKey = () => (state.match ? `${state.match.lg.id}|${state.match.h}|${state.match.a}` : '');
+const matchKey = () => (state.match ? `${state.match.lg.id}|${state.match.lg.teams[state.match.h]}|${state.match.lg.teams[state.match.a]}` : '');
 
 async function loadIndex() {
   const r = await fetch('data/index.json', { cache: 'no-cache' });
@@ -46,6 +63,7 @@ async function loadLeague(id) {
 // ---------------------------------------------------------------- routing
 
 function route() {
+  if (!state.index) return;
   const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean).map(decodeURIComponent);
   window.scrollTo(0, 0);
   if (parts[0] === 'm' && parts.length >= 4) return renderMatch(parts[1], parts[2], parts[3]);
@@ -94,11 +112,12 @@ function fixturesHtml(filter) {
   const fx = state.index.fixtures.filter((f) => (filter === 'all' || f[0] === filter) && !(fixtureTime(f[1]) && fixtureTime(f[1]) < from));
   if (!fx.length) return '<p class="empty">Δεν υπάρχουν προγραμματισμένοι αγώνες τις επόμενες μέρες.</p>';
   let html = '', lastDay = '';
-  for (const [id, t, home, away, q] of fx.slice(0, 160)) {
+  for (const [id, t, home, away, q] of fx) {
     const d = fixtureTime(t);
     const day = d ? dayFmt.format(d) : t;
     if (day !== lastDay) { html += `<div class="day">${esc(day)}</div>`; lastDay = day; }
     const l = leagueMeta(id);
+    if (!l) continue;
     html += `<button class="fx" data-m="${esc(id)}|${esc(home)}|${esc(away)}">
       <span class="t">${d ? timeFmt.format(d) : ''}</span>
       <span class="teams">${esc(home)}<br>${esc(away)}<br><span class="lg">${l.flag} ${esc(l.country)} · ${esc(l.name)}</span></span>
@@ -164,7 +183,7 @@ async function renderMatch(id, hn, an) {
   const h = lg.teams.indexOf(hn), a = lg.teams.indexOf(an);
   if (h < 0 || a < 0) { $app.innerHTML = '<p class="empty">Δεν βρέθηκε η ομάδα σε αυτό το πρωτάθλημα.</p>'; return; }
   const fx = (lg.fixtures || []).find((f) => f[2] === h && f[3] === a);
-  const overrides = store.get(`ovr|${id}|${h}|${a}`, [{}, {}]);
+  const overrides = saved(`${id}|${hn}|${an}`).ovr || [{}, {}];
   const refIdx = fx?.[4] ? lg.refs.indexOf(fx[4]) : -1;
   state.match = { lg, h, a, fx, overrides, referee: refIdx >= 0 ? refIdx : null };
   state.pick = [{ name: hn, league: id, flag: lg.flag, country: lg.country }, { name: an, league: id, flag: lg.flag, country: lg.country }];
@@ -240,7 +259,7 @@ function paneHtml() {
 
 // ---------------------------------------------------------------- market rows and odds
 
-const oddsMap = () => store.get(`odds|${matchKey()}`, {});
+const oddsMap = () => saved(matchKey()).odds || {};
 const bankroll = () => store.get('bankroll', 100);
 
 function evHtml(it, o) {
@@ -287,18 +306,23 @@ function onOddsInput(input) {
   const odds = oddsMap();
   const v = parseOdds(input.value);
   if (v) odds[key] = v; else delete odds[key];
-  store.set(`odds|${matchKey()}`, odds);
-  // refresh every row showing this selection (it may appear in more than one tab)
+  save(matchKey(), 'odds', odds);
+  refreshRows(input);
+}
+
+// Redraws value and stake on every row on screen (after new odds or a new bankroll).
+function refreshRows(typing) {
+  const odds = oddsMap();
   for (const row of document.querySelectorAll('.mrow')) {
-    if (row.dataset.key !== key) continue;
-    const it = findItem(key);
+    const it = findItem(row.dataset.key);
     if (!it) continue;
+    const o = odds[row.dataset.key] || null;
     row.classList.remove('value', 'novalue');
-    const c = rowClass(it, v);
+    const c = rowClass(it, o);
     if (c) row.classList.add(c);
-    row.querySelector('.ev').textContent = evHtml(it, v);
+    row.querySelector('.ev').textContent = evHtml(it, o);
     const inp = row.querySelector('input');
-    if (inp !== input) inp.value = v || '';
+    if (inp !== typing && parseOdds(inp.value) !== o) inp.value = o || '';
   }
   const vb = document.getElementById('valuebets');
   if (vb) vb.innerHTML = valueBetsHtml();
@@ -400,7 +424,7 @@ function refereeHtml() {
   const { lg, referee, r } = state.match;
   const refs = lg.fit.refs;
   if (!refs || !Object.keys(refs).length) return '';
-  const list = Object.entries(refs).filter(([, v]) => v.n >= 3).sort((x, y) => lg.refs[x[0]].localeCompare(lg.refs[y[0]]));
+  const list = Object.entries(refs).filter(([k, v]) => v.n >= 3 || String(referee) === k).sort((x, y) => lg.refs[x[0]].localeCompare(lg.refs[y[0]]));
   return `<div class="group"><h3>Διαιτητής <span class="muted">${r.refFactor !== 1 ? `κάρτες ×${r.refFactor.toFixed(2)}` : ''}</span></h3><div style="padding:10px 14px">
     <select class="ref" data-ref><option value="">Άγνωστος / μέσος όρος</option>
     ${list.map(([k, v]) => `<option value="${k}" ${String(referee) === k ? 'selected' : ''}>${esc(lg.refs[k])} (×${v.f.toFixed(2)}, ${v.n} αγ.)</option>`).join('')}</select></div></div>`;
@@ -492,7 +516,8 @@ function absHtml() {
     const e = r.eff[side];
     const candidates = sq.filter((p) => !names.has(p.name) && p.share > 0.15).sort((x, y) => y.share - x.share);
     out.push(`<div class="group"><h3>${esc(r.names[side])} <span class="muted">${listed.length} στη λίστα</span></h3><div style="padding:6px 14px 10px">
-      <div class="effect"><span>Επίθεση ${Math.round((e.att - 1) * 100)}%</span><span>Δεχόμενα γκολ ${e.def >= 1 ? '+' : ''}${Math.round((e.def - 1) * 100)}%</span></div>
+      ${r.covered[side] ? `<div class="effect"><span>Επίθεση ${Math.round((e.att - 1) * 100)}%</span><span>Δεχόμενα γκολ ${e.def >= 1 ? '+' : ''}${Math.round((e.def - 1) * 100)}%</span></div>`
+        : '<p class="muted small">Δεν υπάρχουν πλήρη στατιστικά παικτών για αυτή την ομάδα, οπότε οι απουσίες εμφανίζονται χωρίς να αλλάζουν τις πιθανότητες.</p>'}
       ${rows.join('') || '<p class="muted small">Καμία γνωστή απουσία.</p>'}
       ${candidates.length ? `<select class="ref" data-add="${side}" style="margin-top:8px"><option value="">+ Πρόσθεσε απουσία…</option>${candidates.map((p) => `<option>${esc(p.name)}</option>`).join('')}</select>` : ''}
     </div></div>`);
@@ -505,7 +530,7 @@ function absHtml() {
 function setAvail(side, name, v) {
   const m = state.match;
   m.overrides[side] = { ...(m.overrides[side] || {}), [name]: v };
-  store.set(`ovr|${m.lg.id}|${m.h}|${m.a}`, m.overrides);
+  save(matchKey(), 'ovr', m.overrides);
   computeMatch();
   drawMatch();
 }
@@ -517,7 +542,7 @@ function renderInfo() {
   const { params, leagues } = state.index;
   const rows = leagues.map((l) => {
     const b = l.bt || {};
-    const gap = b.ll !== null && b.llMkt !== null ? b.ll - b.llMkt : null;
+    const gap = Number.isFinite(b.ll) && Number.isFinite(b.llMkt) ? b.ll - b.llMkt : null;
     return `<tr><td>${l.flag} ${esc(l.country)}</td><td class="n">${b.n ?? '–'}</td><td class="n">${b.acc !== null && b.acc !== undefined ? Math.round(b.acc * 100) + '%' : '–'}</td>
       <td class="n">${b.ll !== null && b.ll !== undefined ? b.ll.toFixed(3) : '–'}</td><td class="n">${gap !== null ? (gap > 0 ? '+' : '') + gap.toFixed(3) : '–'}</td>
       <td class="n" style="color:${b.roi > 0 ? 'var(--accent)' : 'var(--bad)'}">${b.roi !== null && b.roi !== undefined ? (b.roi > 0 ? '+' : '') + Math.round(b.roi * 100) + '%' : '–'}</td></tr>`;
@@ -549,7 +574,7 @@ $app.addEventListener('input', (e) => {
   } else if (t.dataset.odds) onOddsInput(t);
   else if (t.dataset.bank !== undefined) {
     const v = parseOdds(t.value) || parseFloat(t.value.replace(',', '.'));
-    if (v > 0) { store.set('bankroll', v); const vb = document.getElementById('valuebets'); if (vb) vb.innerHTML = valueBetsHtml(); }
+    if (v > 0) { store.set('bankroll', v); refreshRows(); }
   }
 });
 
@@ -577,6 +602,7 @@ $app.addEventListener('click', (e) => {
     const box = b.closest('.suggest');
     choose(+b.dataset.pick, box._list[+b.dataset.i]);
   } else if (b.dataset.act === 'go') startAnalysis();
+  else if (b.dataset.act === 'retry') start();
   else if (b.dataset.act === 'swap') {
     state.pick.reverse();
     for (const i of [0, 1]) {
@@ -595,8 +621,10 @@ $app.addEventListener('click', (e) => {
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
     document.getElementById('pane').innerHTML = paneHtml();
     b.scrollIntoView({ inline: 'center', block: 'nearest' });
-    const top = document.querySelector('.tabs').getBoundingClientRect().top;
-    if (top < 0 || window.scrollY > document.querySelector('.tabs').offsetTop) window.scrollTo(0, document.querySelector('.tabs').offsetTop - 50);
+    // if the page was scrolled into the old tab, show the new one from its start
+    const stuck = document.querySelector('.top').offsetHeight + document.querySelector('.tabs').offsetHeight;
+    const paneTop = document.getElementById('pane').getBoundingClientRect().top + window.scrollY - stuck - 8;
+    if (window.scrollY > paneTop) window.scrollTo(0, paneTop);
   } else if (b.dataset.av !== undefined) {
     const seg = b.closest('.seg');
     setAvail(+seg.dataset.side, seg.dataset.player, +b.dataset.av);
@@ -610,7 +638,11 @@ document.addEventListener('click', (e) => {
 // ---------------------------------------------------------------- start
 
 window.addEventListener('hashchange', route);
-loadIndex().then(route).catch(() => {
-  $app.innerHTML = '<p class="empty">Δεν φορτώθηκαν τα δεδομένα. Έλεγξε τη σύνδεση και ξαναδοκίμασε.</p>';
-});
+function start() {
+  $app.innerHTML = '<p class="loading">Φόρτωση δεδομένων…</p>';
+  loadIndex().then(route).catch(() => {
+    $app.innerHTML = '<p class="empty">Δεν φορτώθηκαν τα δεδομένα. Έλεγξε τη σύνδεση.</p><p style="text-align:center"><button class="btn" data-act="retry" style="flex:none">Δοκίμασε ξανά</button></p>';
+  });
+}
+start();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

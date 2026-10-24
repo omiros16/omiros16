@@ -14,7 +14,7 @@ const GREEK_ALIASES = {
   'ρεαλ μαδριτης': 'Real Madrid', 'ρεαλ': 'Real Madrid', 'μπαρτσελονα': 'Barcelona', 'μπαρσα': 'Barcelona', 'ατλετικο μαδριτης': 'Ath Madrid',
   'ατλετικο': 'Ath Madrid', 'αθλετικ μπιλμπαο': 'Ath Bilbao', 'μπιλμπαο': 'Ath Bilbao', 'σεβιλλη': 'Sevilla', 'μπετις': 'Betis',
   'σοσιεδαδ': 'Sociedad', 'βιγιαρεαλ': 'Villarreal', 'βαλενθια': 'Valencia', 'βαλενσια': 'Valencia', 'θελτα': 'Celta', 'σελτα': 'Celta',
-  'τζιρονα': 'Girona', 'οσασουνα': 'Osasuna', 'χετafe': 'Getafe', 'χεταφε': 'Getafe', 'μαγιορκα': 'Mallorca', 'ραγιο': 'Vallecano',
+  'τζιρονα': 'Girona', 'οσασουνα': 'Osasuna', 'χεταφε': 'Getafe', 'μαγιορκα': 'Mallorca', 'ραγιο': 'Vallecano',
   'αλαβες': 'Alaves', 'εσπανιολ': 'Espanol', 'λεβαντε': 'Levante', 'ελτσε': 'Elche', 'οβιεδο': 'Oviedo',
   'ιντερ': 'Inter', 'μιλαν': 'Milan', 'γιουβεντους': 'Juventus', 'γιουβε': 'Juventus', 'ναπολι': 'Napoli', 'ρομα': 'Roma', 'λατσιο': 'Lazio',
   'αταλαντα': 'Atalanta', 'φιορεντινα': 'Fiorentina', 'μπολονια': 'Bologna', 'τορινο': 'Torino', 'τζενοα': 'Genoa', 'ουντινεζε': 'Udinese',
@@ -25,7 +25,7 @@ const GREEK_ALIASES = {
   'ουνιον βερολινου': 'Union Berlin', 'μαιντς': 'Mainz', 'αουγκσμπουργκ': 'Augsburg', 'αμβουργο': 'Hamburg', 'κολωνια': 'FC Koln',
   'σαιντ παουλι': 'St Pauli', 'χαιντενχαιμ': 'Heidenheim',
   'παρι': 'Paris SG', 'παρι σεν ζερμεν': 'Paris SG', 'μαρσειγ': 'Marseille', 'μασσαλια': 'Marseille', 'λυων': 'Lyon', 'μονακο': 'Monaco',
-  'λιλ': 'Lille', 'νις': 'Nice', 'νιςα': 'Nice', 'λανς': 'Lens', 'ρεν': 'Rennes', 'στρασβουργο': 'Strasbourg', 'ναντ': 'Nantes', 'τουλουζ': 'Toulouse',
+  'λιλ': 'Lille', 'νις': 'Nice', 'λανς': 'Lens', 'ρεν': 'Rennes', 'στρασβουργο': 'Strasbourg', 'ναντ': 'Nantes', 'τουλουζ': 'Toulouse',
   'αγιαξ': 'Ajax', 'αιντχοφεν': 'PSV Eindhoven', 'φεγενορντ': 'Feyenoord', 'αλκμααρ': 'AZ Alkmaar', 'τβεντε': 'Twente', 'ουτρεχτη': 'Utrecht',
   'μπενφικα': 'Benfica', 'πορτο': 'Porto', 'σπορτινγκ': 'Sp Lisbon', 'σπορτινγκ λισαβονας': 'Sp Lisbon', 'μπραγκα': 'Sp Braga', 'γκιμαραες': 'Guimaraes',
   'γαλατασαραι': 'Galatasaray', 'φενερμπαχτσε': 'Fenerbahce', 'μπεσικτας': 'Besiktas', 'τραμπζονσπορ': 'Trabzonspor', 'μπασακσεχιρ': 'Buyuksehyr',
@@ -39,7 +39,7 @@ const GREEK_ALIASES = {
 const DIGRAPHS = [['ου', 'ou'], ['μπ', 'mp'], ['ντ', 'nt'], ['γκ', 'gk'], ['γγ', 'ng'], ['τσ', 'ts'], ['τζ', 'tz'], ['αι', 'ai'], ['ει', 'ei'], ['οι', 'oi'], ['αυ', 'av'], ['ευ', 'ev'], ['θ', 'th'], ['χ', 'ch'], ['ψ', 'ps'], ['ξ', 'x']];
 const LETTERS = { α: 'a', β: 'v', γ: 'g', δ: 'd', ε: 'e', ζ: 'z', η: 'i', ι: 'i', κ: 'k', λ: 'l', μ: 'm', ν: 'n', ο: 'o', π: 'p', ρ: 'r', σ: 's', ς: 's', τ: 't', υ: 'y', φ: 'f', ω: 'o' };
 
-export const plain = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’'`.]/g, '').replace(/\s+/g, ' ').trim();
+export const plain = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/ς/g, 'σ').replace(/[’'`.]/g, '').replace(/\s+/g, ' ').trim();
 
 export function latin(s) {
   let t = plain(s);
