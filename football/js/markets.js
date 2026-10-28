@@ -154,7 +154,7 @@ export function buildMarkets(pr) {
   // Halves
   const hf2 = htft(lh, la, ht, M);
   const lab = ['1', 'X', '2'];
-  G.push({ id: 'ht', t: 'Ημίχρονο – αποτέλεσμα', cat: 'half', items: lab.map((x, i) => item(`Ημίχρονο ${x}`, hf2.ht1[i])) });
+  G.push({ id: 'ht', t: 'Αποτέλεσμα ημιχρόνου', cat: 'half', items: lab.map((x, i) => item(`Ημίχρονο ${x}`, hf2.ht1[i])) });
   const htftItems = [];
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) htftItems.push(item(`${lab[r]}/${lab[c]}`, hf2.T[r][c]));
   G.push({ id: 'htft', t: 'Ημίχρονο / Τελικό', cat: 'half', items: htftItems });
@@ -162,7 +162,7 @@ export function buildMarkets(pr) {
   for (const L of [0.5, 1.5, 2.5]) htou.push(item(`1ο ημίχρ. Over ${L}`, over(hf2.htTot, L)), item(`1ο ημίχρ. Under ${L}`, 1 - over(hf2.htTot, L)));
   for (const L of [0.5, 1.5, 2.5]) htou.push(item(`2ο ημίχρ. Over ${L}`, over(hf2.h2Tot, L)), item(`2ο ημίχρ. Under ${L}`, 1 - over(hf2.h2Tot, L)));
   G.push({ id: 'htou', t: 'Over / Under ανά ημίχρονο', cat: 'half', items: htou });
-  G.push({ id: 'h2', t: '2ο ημίχρονο – αποτέλεσμα', cat: 'half', items: lab.map((x, i) => item(`2ο ημίχρ. ${x}`, hf2.H2[i])) });
+  G.push({ id: 'h2', t: 'Αποτέλεσμα 2ου ημιχρόνου', cat: 'half', items: lab.map((x, i) => item(`2ο ημίχρ. ${x}`, hf2.H2[i])) });
   const hv = hf2.halves;
   G.push({ id: 'hsh', t: 'Ημίχρονο με τα περισσότερα γκολ', cat: 'half', items: [item('1ο ημίχρονο', hv.more1), item('Ίδια', hv.equal), item('2ο ημίχρονο', hv.more2)] });
   const e = hf2.extra;
@@ -232,10 +232,10 @@ export function buildMarkets(pr) {
     if (!list || !list.length) continue;
     const team = names[side];
     const top = list.filter((p) => p.perGame >= 20).slice(0, 14);
-    G.push({ id: 'scorer' + side, t: `Σκόρερ – ${team}`, cat: 'players', items: top.map((p) => ({ ...item(`${p.name}`, p.anytime), sub: `Πρώτος: ${(p.first * 100).toFixed(1)}% · 2+: ${(p.brace * 100).toFixed(1)}% · ~${Math.round(p.perGame)}'` })) });
-    G.push({ id: 'assist' + side, t: `Ασίστ / Γκολ ή ασίστ – ${team}`, cat: 'players', items: top.slice(0, 10).flatMap((p) => [item(`${p.name} ασίστ`, p.assist), item(`${p.name} γκολ ή ασίστ`, p.gOrA)]) });
+    G.push({ id: 'scorer' + side, t: 'Σκόρερ', team, cat: 'players', items: top.map((p) => ({ ...item(`${p.name}`, p.anytime), sub: `Πρώτος: ${(p.first * 100).toFixed(1)}% · 2+: ${(p.brace * 100).toFixed(1)}% · ~${Math.round(p.perGame)}'` })) });
+    G.push({ id: 'assist' + side, t: 'Ασίστ, γκολ ή ασίστ', team, cat: 'players', items: top.slice(0, 10).flatMap((p) => [item(`${p.name} ασίστ`, p.assist), item(`${p.name} γκολ ή ασίστ`, p.gOrA)]) });
     const carded = [...list].filter((p) => p.perGame >= 30).sort((x, y) => y.card - x.card).slice(0, 10);
-    if (carded.length && carded[0].card > 0) G.push({ id: 'pcard' + side, t: `Κάρτα παίκτη – ${team}`, cat: 'players', items: carded.map((p) => item(p.name, p.card)) });
+    if (carded.length && carded[0].card > 0) G.push({ id: 'pcard' + side, t: 'Κάρτα παίκτη', team, cat: 'players', items: carded.map((p) => item(p.name, p.card)) });
   }
   return G;
 }

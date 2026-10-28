@@ -38,7 +38,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp -r football/index.html football/manifest.webmanifest football/sw.js football/icon.svg football/*.png football/css football/js football/data _site/
+          cp -r football/index.html football/manifest.webmanifest football/sw.js football/icon.svg football/*.png football/css football/js football/fonts football/data _site/
           du -sh _site _site/data
       - uses: actions/upload-pages-artifact@v3
         with:

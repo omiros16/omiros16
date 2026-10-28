@@ -1,8 +1,10 @@
 // Offline support. The app files and the data files are each kept as one copy that is
 // replaced on update, and old caches are deleted, so storage stays the same size.
-const VERSION = 'v4';
+const VERSION = 'v5';
 const SHELL = `shell-${VERSION}`, DATA = 'data';
-const FILES = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/analyze.js', 'js/model.js', 'js/markets.js', 'js/teams.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
+const FILES = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/analyze.js', 'js/model.js', 'js/markets.js', 'js/teams.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',
+  'fonts/commissioner-greek-wght-normal.woff2', 'fonts/commissioner-latin-wght-normal.woff2', 'fonts/commissioner-latin-ext-wght-normal.woff2',
+  'fonts/fira-sans-extra-condensed-greek-600-normal.woff2', 'fonts/fira-sans-extra-condensed-latin-600-normal.woff2'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
