@@ -1,0 +1,22 @@
+# Temporary: probes the deals data sources from a GitHub runner. Removed once the updater exists.
+name: deals-probe
+on:
+  push:
+    paths: ['deals/scripts/probe.mjs', '.github/workflows/deals-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        section: [posokanei, robots, terms, pages]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node deals/scripts/probe.mjs ${{ matrix.section }}
