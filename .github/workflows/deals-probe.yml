@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        section: [posokanei, robots, terms, pages]
+        section: [terms, flyers]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
