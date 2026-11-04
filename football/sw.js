@@ -18,7 +18,8 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  // the deals page under /deals/ has its own service worker
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/deals/')) return;
   if (url.pathname.includes('/data/')) {
     // data: network first so the weekly update shows up, cached copy when offline
     e.respondWith(fetch(e.request).then((r) => {

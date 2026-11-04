@@ -1,0 +1,94 @@
+# Deals app (deals/): checks supermarket prices three times a week, keeps the price history on the
+# deals-data branch and sends Telegram alerts. It also applies the changes sent from the page as
+# issues (levers, shops, thresholds, manual prices). The page itself is published by football.yml.
+name: deals
+on:
+  schedule:
+    # Sunday, Tuesday and Friday at 04:41 UTC (06:41 Greek winter time, 07:41 summer time):
+    # Tuesday and Friday pick up the offers that start on Monday and Thursday, Sunday plans the week
+    - cron: '41 4 * * 0,2,5'
+  workflow_dispatch:
+    inputs:
+      summary:
+        description: 'Send the weekly basket summary too'
+        type: boolean
+        default: false
+  issues:
+    types: [opened]
+  push:
+    paths: ['deals/**', '.github/workflows/deals.yml']
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: deals
+  cancel-in-progress: false
+
+jobs:
+  update:
+    # issues: only the requests that the page opens for the repository owner
+    if: github.event_name != 'issues' || (startsWith(github.event.issue.title, 'deals:') && github.event.issue.user.login == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # pushes to other branches only test: no message, nothing saved
+      LIVE: ${{ github.event_name != 'push' || github.ref_name == github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        run: node deals/test/core.test.mjs
+      - name: Data branch
+        run: |
+          D="$RUNNER_TEMP/deals-data"
+          echo "D=$D" >> "$GITHUB_ENV"
+          if git fetch -q --depth=1 origin deals-data:refs/remotes/origin/deals-data; then
+            git worktree add -q -B deals-data "$D" origin/deals-data
+          else
+            echo "first run: creating the deals-data branch"
+            git worktree add -q --orphan -b deals-data "$D"
+          fi
+      - name: Apply the request from the page
+        if: github.event_name == 'issues'
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          REPLY_FILE: ${{ runner.temp }}/reply.md
+        run: node deals/scripts/settings.mjs "$D"
+      - name: Update prices
+        env:
+          NOTIFY: ${{ env.LIVE == 'true' && '1' || '0' }}
+          SUMMARY: ${{ (github.event_name == 'issues' || inputs.summary) && '1' || '0' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node deals/scripts/update.mjs "$D"
+      - name: Check the data
+        run: node deals/test/data.test.mjs "$D"
+      - name: Save
+        id: save
+        if: env.LIVE == 'true'
+        run: |
+          cd "$D"
+          git add -A
+          if git diff --cached --quiet; then echo "nothing changed"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Prices of $(node -p "require('./latest.json').snapshot.date")"
+          git push -q origin HEAD:deals-data
+      - name: Answer the request
+        if: always() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          SAVED: ${{ steps.save.outcome }}
+        run: |
+          f="$RUNNER_TEMP/reply.md"
+          [ -s "$f" ] || echo "Η αλλαγή δεν εφαρμόστηκε." > "$f"
+          if [ "$SAVED" != "success" ] && ! grep -q "δεν εφαρμόστηκε" "$f"; then
+            echo "" >> "$f"; echo "⚠️ Η ενημέρωση των τιμών απέτυχε, οπότε η αλλαγή δεν αποθηκεύτηκε. Δες το log του workflow." >> "$f"
+          fi
+          printf '\n\n---\n_Απάντηση από το workflow deals._\n' >> "$f"
+          gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$f"
+          gh issue close "$NUMBER" --repo "$GITHUB_REPOSITORY"

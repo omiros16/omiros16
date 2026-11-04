@@ -1,12 +1,14 @@
 # Football analysis app: rebuilds the data twice a week (after the weekend and before it)
 # and publishes the app with GitHub Pages. Each run replaces the data, nothing accumulates.
+# The site also carries the deals page under /deals/ (its prices come from the deals-data
+# branch, so only changes to deals/app need a new deployment).
 name: football-data
 on:
   schedule:
     - cron: '17 4 * * 2,5'   # Tuesday and Friday, 04:17 UTC
   workflow_dispatch:
   push:
-    paths: ['football/**', '.github/workflows/football.yml']
+    paths: ['football/**', 'deals/app/**', '.github/workflows/football.yml']
 
 permissions:
   contents: read
@@ -39,7 +41,8 @@ jobs:
         run: |
           mkdir -p _site
           cp -r football/index.html football/manifest.webmanifest football/sw.js football/icon.svg football/*.png football/css football/js football/fonts football/data _site/
-          du -sh _site _site/data
+          mkdir -p _site/deals && cp -r deals/app/. _site/deals/
+          du -sh _site _site/data _site/deals
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
