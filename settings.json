@@ -1,0 +1,13 @@
+{
+  "levers": {
+    "protein": false,
+    "whole": false,
+    "legumes": false,
+    "pl": false
+  },
+  "chains": {},
+  "thresholds": {},
+  "off": [],
+  "weekly": true,
+  "auto": true
+}
