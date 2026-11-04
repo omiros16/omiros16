@@ -39,6 +39,8 @@ const S = () => normSettings(draft?.s || data.settings);
 function change(fn) {
   const s = S();
   fn(s);
+  // a shop switched back to its default is no change
+  for (const c of data.cfg.chains) if (s.chains[c.id] === !!c.heraklion) delete s.chains[c.id];
   draft = same(s, data.settings) ? null : { s, from: data.settings, sent: false };
   store.set(draft);
   render();

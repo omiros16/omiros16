@@ -162,7 +162,9 @@ async function main() {
   if (parts.length || staleNote) {
     const text = `${header(data, today)}\n\n${parts.join('\n\n')}\n\n<a href="${data.app}">Άνοιξε την εφαρμογή</a>`;
     if (process.env.NOTIFY === '1') {
-      if (await send(text)) {
+      // a Telegram failure must not stop the prices from being saved: warn and retry next run
+      const sent = await send(text).catch((e) => { console.log(`::warning::Telegram: ${e.message}`); return false; });
+      if (sent) {
         for (const a of newOnes) state.sent[a.key] = { first: state.sent[a.key]?.first || today, last: today, u: priceOf(a) };
         if (staleNote) state.staleNoted = sdate;
         await writeJson(`${DIR}/state.json`, state);
