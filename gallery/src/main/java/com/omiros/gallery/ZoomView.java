@@ -19,6 +19,11 @@ final class ZoomView extends View {
         void onTap(ZoomView v);
     }
 
+    /** Where the content sits on screen; the video player moves its picture there. */
+    interface FrameListener {
+        void onFrame(RectF frame);
+    }
+
     private static final float MAX_SCALE = 6;
 
     private final Listener listener;
@@ -35,6 +40,9 @@ final class ZoomView extends View {
     long id = Long.MIN_VALUE; // which item this page shows
     boolean video;
     private Bitmap bitmap;
+    private int contentW;
+    private int contentH;
+    private FrameListener frameListener;
     private boolean broken;
     private float scale = 1;
     private float tx;
@@ -71,7 +79,7 @@ final class ZoomView extends View {
 
             @Override
             public boolean onDoubleTap(MotionEvent e) {
-                if (!video && bitmap != null) animateTo(scale > 1.05f ? 1 : 2.5f, e.getX(), e.getY());
+                if (!video && contentW > 0) animateTo(scale > 1.05f ? 1 : 2.5f, e.getX(), e.getY());
                 return true;
             }
 
@@ -81,7 +89,7 @@ final class ZoomView extends View {
                 tx -= dx;
                 ty -= dy;
                 clamp();
-                invalidate();
+                changed();
                 return true;
             }
         });
@@ -93,6 +101,7 @@ final class ZoomView extends View {
         this.id = id;
         this.video = video;
         bitmap = null;
+        contentW = contentH = 0;
         broken = false;
         scale = 1;
         tx = ty = 0;
@@ -103,16 +112,32 @@ final class ZoomView extends View {
         if (anim != null) anim.cancel();
         scale = 1;
         tx = ty = 0;
-        invalidate();
+        clamp();
+        changed();
+    }
+
+    void setFrameListener(FrameListener l) {
+        frameListener = l;
+    }
+
+    /** Zoom something drawn by another view (a playing video) instead of a bitmap. */
+    void setContentSize(int w, int h) {
+        contentW = w;
+        contentH = h;
+        computeFit();
+        clamp();
+        changed();
     }
 
     /** Swap in a (sharper) bitmap of the same item; the zoom is kept because the aspect ratio is the same. */
     void setBitmap(Bitmap b) {
         bitmap = b;
+        contentW = b.getWidth();
+        contentH = b.getHeight();
         broken = false;
         computeFit();
         clamp();
-        invalidate();
+        changed();
     }
 
     boolean hasBitmap() {
@@ -151,15 +176,17 @@ final class ZoomView extends View {
         scale = 1;
         tx = ty = 0;
         computeFit();
+        clamp();
+        changed();
     }
 
     private void computeFit() {
         int w = getWidth();
         int h = getHeight();
-        if (bitmap == null || w == 0 || h == 0) return;
-        float s = Math.min(w / (float) bitmap.getWidth(), h / (float) bitmap.getHeight());
-        float bw = bitmap.getWidth() * s;
-        float bh = bitmap.getHeight() * s;
+        if (contentW == 0 || contentH == 0 || w == 0 || h == 0) return;
+        float s = Math.min(w / (float) contentW, h / (float) contentH);
+        float bw = contentW * s;
+        float bh = contentH * s;
         fit.set((w - bw) / 2, (h - bh) / 2, (w + bw) / 2, (h + bh) / 2);
     }
 
@@ -174,7 +201,7 @@ final class ZoomView extends View {
         ty = fy - (fy - ty) * f;
         scale = next;
         clamp();
-        invalidate();
+        changed();
     }
 
     private void animateTo(final float target, final float fx, final float fy) {
@@ -189,6 +216,14 @@ final class ZoomView extends View {
             }
         });
         anim.start();
+    }
+
+    private void changed() {
+        invalidate();
+        if (frameListener != null && contentW > 0 && getWidth() > 0) {
+            current();
+            frameListener.onFrame(dst);
+        }
     }
 
     /** Centre content smaller than the view; otherwise keep its edges outside the view. */

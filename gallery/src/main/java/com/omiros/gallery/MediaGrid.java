@@ -20,7 +20,7 @@ import java.util.List;
 
 /**
  * Thumbnail grid built from ListView rows (the framework has no RecyclerView), with day headers,
- * pinch to change the number of columns and long-press multi-select.
+ * pinch to change the number of columns, and long-press multi-select that extends while the finger slides.
  */
 final class MediaGrid extends ListView {
     interface Listener {
@@ -47,11 +47,41 @@ final class MediaGrid extends ListView {
     private float pinch = 1;
     private boolean multiTouch;
 
+    // drag-select: long-press a cell, then slide to select (or deselect) everything between it and the finger
+    private boolean touching;
+    private boolean dragging;
+    private boolean dragCancelSent;
+    private boolean dragAdds;
+    private int anchor;
+    private int lastDrag;
+    private float lastX;
+    private float lastY;
+    private final HashSet<Long> base = new HashSet<>();
+    private final int edge;
+    private final int maxSpeed;
+    private final Runnable autoScroll = new Runnable() {
+        @Override
+        public void run() {
+            if (!dragging) return;
+            // near the top or bottom edge the list scrolls by itself, faster the closer the finger is
+            float speed = 0;
+            if (lastY < edge) speed = -Math.min(1, (edge - lastY) / edge);
+            else if (lastY > getHeight() - edge) speed = Math.min(1, (lastY - getHeight() + edge) / edge);
+            if (speed != 0) {
+                scrollListBy(Math.round(speed * maxSpeed));
+                dragTo(indexAt(lastX, lastY));
+            }
+            postOnAnimation(this);
+        }
+    };
+
     MediaGrid(Context c, int cols, Listener listener) {
         super(c);
         this.listener = listener;
         this.cols = cols;
         gap = Theme.dp(c, 2);
+        edge = Theme.dp(c, 72);
+        maxSpeed = Theme.dp(c, 18);
         setDivider(null);
         setSelector(android.R.color.transparent);
         setFastScrollEnabled(true);
@@ -143,10 +173,68 @@ final class MediaGrid extends ListView {
         setSelecting(!selected.isEmpty());
     }
 
+    private void startDrag(int index) {
+        base.clear();
+        base.addAll(selected);
+        dragAdds = !selected.contains(items.get(index).id);
+        anchor = index;
+        lastDrag = -1;
+        dragging = true;
+        dragCancelSent = false;
+        dragTo(index);
+        postOnAnimation(autoScroll);
+    }
+
+    private void dragTo(int index) {
+        if (index < 0 || index == lastDrag) return;
+        lastDrag = index;
+        selected.clear();
+        selected.addAll(base);
+        for (int i = Math.min(anchor, index); i <= Math.max(anchor, index); i++) {
+            long id = items.get(i).id;
+            if (dragAdds) selected.add(id);
+            else selected.remove(id);
+        }
+        selecting = !selected.isEmpty();
+        adapter.notifyDataSetChanged();
+        listener.onSelectionChanged();
+    }
+
+    /** The item under a point, or -1 over a day header or empty space. */
+    private int indexAt(float x, float y) {
+        int pos = pointToPosition((int) x, (int) Math.max(0, Math.min(getHeight() - 1, y)));
+        if (pos == INVALID_POSITION || pos >= rows.size()) return -1;
+        int[] row = rows.get(pos);
+        if (row[0] != Sections.CELLS || getWidth() == 0) return -1;
+        int col = (int) (Math.max(0, Math.min(getWidth() - 1, x)) * cols / getWidth());
+        return Math.min(row[1] + col, row[2] - 1);
+    }
+
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        scale.onTouchEvent(ev);
         int action = ev.getActionMasked();
+        if (dragging) {
+            if (!dragCancelSent) {
+                // the long-pressed cell still holds the touch: end it so the grid neither clicks nor scrolls
+                dragCancelSent = true;
+                MotionEvent cancel = MotionEvent.obtain(ev);
+                cancel.setAction(MotionEvent.ACTION_CANCEL);
+                super.dispatchTouchEvent(cancel);
+                cancel.recycle();
+            }
+            lastX = ev.getX();
+            lastY = ev.getY();
+            if (action == MotionEvent.ACTION_MOVE) dragTo(indexAt(lastX, lastY));
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                dragging = false;
+                touching = false;
+                removeCallbacks(autoScroll);
+            }
+            return true;
+        }
+        if (action == MotionEvent.ACTION_DOWN) touching = true;
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) touching = false;
+        scale.onTouchEvent(ev);
         if (action == MotionEvent.ACTION_DOWN) multiTouch = false;
         if (ev.getPointerCount() > 1 && !multiTouch) {
             // a second finger turns the gesture into a pinch: cancel the scroll / tap in progress
@@ -207,6 +295,7 @@ final class MediaGrid extends ListView {
                 CellView cell = (CellView) line.getChildAt(i);
                 int index = row[1] + i;
                 if (index < row[2]) {
+                    final int at = index;
                     final Media m = items.get(index);
                     cell.setVisibility(VISIBLE);
                     cell.bind(m, selecting, selected.contains(m.id));
@@ -220,7 +309,8 @@ final class MediaGrid extends ListView {
                     cell.setOnLongClickListener(new OnLongClickListener() {
                         @Override
                         public boolean onLongClick(View v) {
-                            toggle(m);
+                            if (touching && !multiTouch) startDrag(at);
+                            else toggle(m); // TalkBack long-press: no finger to follow
                             return true;
                         }
                     });

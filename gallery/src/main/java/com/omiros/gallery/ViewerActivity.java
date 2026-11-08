@@ -8,7 +8,6 @@ import android.graphics.ImageDecoder;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
@@ -22,10 +21,8 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.MediaController;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.VideoView;
 
 import java.time.Instant;
 import java.time.ZoneId;
@@ -66,10 +63,8 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
     private TextView title;
     private TextView subtitle;
     private ImageView fav;
-    private FrameLayout videoBox;
-    private VideoView video;
+    private VideoPlayer videoBox;
     private View videoClose;
-    private MediaController controller;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -149,13 +144,14 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
     @Override
     protected void onPause() {
         super.onPause();
-        if (video.isPlaying()) video.pause();
+        videoBox.pause();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
         decoder.shutdownNow();
+        videoBox.stop();
     }
 
     @Override
@@ -332,31 +328,11 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
     private void play(Media m) {
         videoBox.setVisibility(View.VISIBLE);
         systemBars(false);
-        controller = new MediaController(this);
-        controller.setAnchorView(videoBox);
-        video.setMediaController(controller);
-        video.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-            @Override
-            public void onPrepared(MediaPlayer mp) {
-                video.start();
-                controller.show();
-            }
-        });
-        video.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                Toast.makeText(ViewerActivity.this, "Δεν παίζει αυτό το βίντεο", Toast.LENGTH_LONG).show();
-                closeVideo();
-                return true;
-            }
-        });
-        video.setVideoURI(m.uri);
+        videoBox.play(m.uri);
     }
 
     private void closeVideo() {
-        if (controller != null) controller.hide();
-        video.stopPlayback();
-        video.setMediaController(null);
+        videoBox.stop();
         videoBox.setVisibility(View.GONE);
         if (external) {
             finish();
@@ -460,12 +436,13 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
         bottom = bottomBar;
         root.addView(bottomBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
 
-        videoBox = new FrameLayout(this);
-        videoBox.setBackgroundColor(0xFF000000);
-        videoBox.setClickable(true); // the pages behind must not react
-        video = new VideoView(this);
-        video.setKeepScreenOn(true);
-        videoBox.addView(video, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        videoBox = new VideoPlayer(this, new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(ViewerActivity.this, "Δεν παίζει αυτό το βίντεο", Toast.LENGTH_LONG).show();
+                closeVideo();
+            }
+        });
         ImageView close = Theme.iconButton(this, R.drawable.ic_close, "Κλείσιμο βίντεο");
         close.setOnClickListener(new View.OnClickListener() {
             @Override
