@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108x108 adaptive icon foreground: a back photo outline and a front photo with mountains and a sun. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#66FFFFFF" android:pathData="M38,32h36a4,4 0 0 1 4,4v28h-3v-28a1,1 0 0 0 -1,-1h-36z" />
+    <path android:fillColor="#FF5B9DFF" android:pathData="M34,40h32a4,4 0 0 1 4,4v28a4,4 0 0 1 -4,4h-32a4,4 0 0 1 -4,-4v-28a4,4 0 0 1 4,-4z" />
+    <path android:fillColor="#FF0F1115" android:pathData="M34,72l11,-14 7,8 5,-6 9,12z" />
+    <path android:fillColor="#FF0F1115" android:pathData="M58,50m-4,0a4,4 0 1 1 8,0a4,4 0 1 1 -8,0" />
+</vector>
