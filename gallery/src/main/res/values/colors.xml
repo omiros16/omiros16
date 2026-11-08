@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- shown for a moment while the app starts; the real colours come from the system palette -->
+    <color name="window_bg">#FFF9F9FF</color>
+</resources>

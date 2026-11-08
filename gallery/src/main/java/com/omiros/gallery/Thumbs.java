@@ -69,7 +69,7 @@ final class Thumbs {
     Bitmap request(Media m, int size, Callback cb) {
         Bitmap b = cache.get(m.id);
         if (b != null && Math.min(b.getWidth(), b.getHeight()) * 10 >= size * 7) return b;
-        if (failed.contains(m.id)) return null;
+        if (failed.contains(m.id)) return b; // keep showing a smaller one rather than nothing
         List<Callback> list = waiting.get(m.id);
         if (list == null) {
             waiting.put(m.id, list = new ArrayList<>());

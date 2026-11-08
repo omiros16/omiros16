@@ -327,9 +327,9 @@ final class MediaGrid extends ListView {
         private TextView header(Context c) {
             TextView t = new TextView(c);
             t.setTextColor(Theme.TEXT);
-            t.setTextSize(15);
+            t.setTextSize(16);
             t.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
-            t.setPadding(Theme.dp(c, 16), Theme.dp(c, 20), Theme.dp(c, 16), Theme.dp(c, 10));
+            t.setPadding(Theme.dp(c, 16), Theme.dp(c, 24), Theme.dp(c, 16), Theme.dp(c, 12));
             return t;
         }
 

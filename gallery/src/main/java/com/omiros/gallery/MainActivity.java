@@ -9,7 +9,10 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.database.ContentObserver;
+import android.graphics.Insets;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -21,6 +24,8 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
@@ -29,6 +34,8 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -75,12 +82,16 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
     private int access = FULL;
     private boolean loaded;
     private int loadGen;
+    private Insets insets = Insets.NONE;
+    private Object backCallback; // OnBackInvokedCallback while something can be closed (Android 13+)
 
+    private View topBar;
     private TextView titleView;
     private TextView emptyTrash;
     private View normalBar;
     private View selectBar;
     private TextView selectCount;
+    private LinearLayout toolbar;
     private ImageView selectFav;
     private TextView banner;
     private TextView trashNote;
@@ -93,11 +104,17 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
     private TextView emptyText;
     private TextView emptyButton;
     private ProgressBar progress;
-    private final TextView[] tabs = new TextView[2];
+    private LinearLayout nav;
+    private final View[] tabIndicators = new View[2];
+    private final ImageView[] tabIcons = new ImageView[2];
+    private final TextView[] tabLabels = new TextView[2];
 
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        Theme.init(this);
+        Theme.edgeToEdge(this, Theme.dark);
+        getWindow().setBackgroundDrawable(new ColorDrawable(Theme.BG));
         Intent in = getIntent();
         mode = in.getIntExtra(EXTRA_MODE, Media.ALL);
         bucket = in.getLongExtra(EXTRA_BUCKET, 0);
@@ -132,9 +149,28 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
     }
 
     @Override
-    public void onBackPressed() {
+    public void onBackPressed() { // Android 11-12; newer versions use the callback below
         if (grid.isSelecting()) grid.clearSelection();
         else super.onBackPressed();
+    }
+
+    /** Back closes the selection first; otherwise the system plays its predictive back animation. */
+    private void interceptBack(boolean on) {
+        if (Build.VERSION.SDK_INT < 33) return;
+        OnBackInvokedDispatcher d = getOnBackInvokedDispatcher();
+        if (on && backCallback == null) {
+            OnBackInvokedCallback cb = new OnBackInvokedCallback() {
+                @Override
+                public void onBackInvoked() {
+                    grid.clearSelection();
+                }
+            };
+            d.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+            backCallback = cb;
+        } else if (!on && backCallback != null) {
+            d.unregisterOnBackInvokedCallback((OnBackInvokedCallback) backCallback);
+            backCallback = null;
+        }
     }
 
     // ---- permission ----
@@ -270,14 +306,16 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         boolean trashItems = mode == Media.TRASH && !noItems && access != NONE;
         emptyTrash.setVisibility(trashItems ? View.VISIBLE : View.GONE);
         trashNote.setVisibility(trashItems ? View.VISIBLE : View.GONE);
-        for (int i = 0; i < tabs.length; i++) {
-            if (tabs[i] == null) continue;
-            int color = i == tab ? Theme.ACCENT : Theme.DIM;
-            tabs[i].setTextColor(color);
-            tabs[i].setCompoundDrawableTintList(ColorStateList.valueOf(color));
-            tabs[i].setSelected(i == tab);
+        for (int i = 0; i < 2 && root; i++) {
+            boolean on = i == tab;
+            tabIndicators[i].setBackground(on ? Theme.rounded(Theme.ACCENT_BG, dp(16)) : null);
+            tabIcons[i].setImageTintList(ColorStateList.valueOf(on ? Theme.ON_ACCENT_BG : Theme.DIM));
+            tabLabels[i].setTextColor(on ? Theme.TEXT : Theme.DIM);
+            tabLabels[i].setTypeface(Typeface.create("sans-serif-medium", on ? Typeface.BOLD : Typeface.NORMAL));
+            tabIndicators[i].setSelected(on);
         }
         onSelectionChanged();
+        updateBarColor();
     }
 
     private void setEmpty(int icon, String head, String text, String button) {
@@ -299,6 +337,26 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         updateViews();
     }
 
+    /** The top bar takes the container colour once content scrolls under it (Material 3). */
+    private void updateBarColor() {
+        AbsListView list = root && tab == 1 ? albumGrid : grid;
+        boolean scrolled = list.getVisibility() == View.VISIBLE && list.getChildCount() > 0
+                && (list.getFirstVisiblePosition() > 0 || list.getChildAt(0).getTop() < list.getPaddingTop());
+        topBar.setBackgroundColor(scrolled || grid.isSelecting() ? Theme.SURFACE : Theme.BG);
+    }
+
+    private void applyInsets() {
+        boolean selecting = grid.isSelecting();
+        topBar.setPadding(insets.left, insets.top, insets.right, 0);
+        if (nav != null) nav.setPadding(insets.left, 0, insets.right, insets.bottom);
+        // without a navigation bar the lists run behind the system bar; leave room for the floating toolbar
+        int bottom = (nav == null || selecting ? insets.bottom : 0) + (selecting ? dp(96) : dp(16));
+        grid.setPadding(insets.left, 0, insets.right, bottom);
+        albumGrid.setPadding(insets.left + dp(16), dp(4), insets.right + dp(16), bottom);
+        ((FrameLayout.LayoutParams) toolbar.getLayoutParams()).bottomMargin = insets.bottom + dp(16);
+        toolbar.requestLayout();
+    }
+
     // ---- grid callbacks ----
 
     @Override
@@ -315,6 +373,18 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         boolean on = grid.isSelecting();
         normalBar.setVisibility(on ? View.GONE : View.VISIBLE);
         selectBar.setVisibility(on ? View.VISIBLE : View.GONE);
+        if (nav != null) nav.setVisibility(on ? View.GONE : View.VISIBLE);
+        if ((toolbar.getVisibility() == View.VISIBLE) != on) {
+            toolbar.setVisibility(on ? View.VISIBLE : View.GONE);
+            if (on) {
+                toolbar.setTranslationY(dp(24));
+                toolbar.setAlpha(0);
+                toolbar.animate().translationY(0).alpha(1).setDuration(220).start();
+            }
+            applyInsets();
+        }
+        interceptBack(on);
+        updateBarColor();
         if (!on) return;
         List<Media> sel = grid.getSelected();
         selectCount.setText(sel.size() == 1 ? "1 επιλεγμένο" : sel.size() + " επιλεγμένα");
@@ -359,22 +429,26 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
     }
 
     private View buildUi() {
-        LinearLayout rootView = new LinearLayout(this);
-        rootView.setOrientation(LinearLayout.VERTICAL);
-        rootView.setBackgroundColor(Theme.BG);
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Theme.BG);
+
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        frame.addView(column);
 
         FrameLayout bars = new FrameLayout(this);
-        bars.addView(buildNormalBar());
-        bars.addView(selectBar = buildSelectBar());
+        bars.addView(buildNormalBar(), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, root ? dp(88) : dp(64)));
+        bars.addView(selectBar = buildSelectBar(), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
         selectBar.setVisibility(View.GONE);
-        rootView.addView(bars, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+        topBar = bars;
+        column.addView(bars);
 
         banner = new TextView(this);
         banner.setText("Βλέπεις μόνο όσες φωτογραφίες επέλεξες. Πάτα για να δώσεις πρόσβαση σε όλες.");
-        banner.setTextColor(Theme.TEXT);
+        banner.setTextColor(Theme.ON_ACCENT_BG);
         banner.setTextSize(14);
-        banner.setPadding(dp(16), dp(12), dp(16), dp(12));
-        banner.setBackground(Theme.ripple(Theme.ACCENT_BG, dp(12)));
+        banner.setPadding(dp(20), dp(16), dp(20), dp(16));
+        banner.setBackground(Theme.ripple(Theme.ACCENT_BG, dp(20), Theme.ON_ACCENT_BG));
         banner.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -382,16 +456,16 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
             }
         });
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        blp.setMargins(dp(12), 0, dp(12), dp(8));
-        rootView.addView(banner, blp);
+        blp.setMargins(dp(16), 0, dp(16), dp(12));
+        column.addView(banner, blp);
         banner.setVisibility(View.GONE);
 
         trashNote = new TextView(this);
         trashNote.setText("Τα στοιχεία σβήνονται οριστικά 30 ημέρες μετά τη διαγραφή. Κράτα πατημένο ένα στοιχείο για επαναφορά.");
         trashNote.setTextColor(Theme.DIM);
-        trashNote.setTextSize(13);
-        trashNote.setPadding(dp(16), 0, dp(16), dp(12));
-        rootView.addView(trashNote);
+        trashNote.setTextSize(14);
+        trashNote.setPadding(dp(20), 0, dp(20), dp(12));
+        column.addView(trashNote);
         trashNote.setVisibility(View.GONE);
 
         FrameLayout content = new FrameLayout(this);
@@ -402,22 +476,49 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         content.addView(empty = buildEmpty());
         progress = new ProgressBar(this);
         progress.setIndeterminateTintList(ColorStateList.valueOf(Theme.ACCENT));
-        content.addView(progress, new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER));
+        content.addView(progress, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         progress.setVisibility(View.GONE);
         grid.setVisibility(View.GONE);
         albumGrid.setVisibility(View.GONE);
         empty.setVisibility(View.GONE);
-        rootView.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        column.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        if (root) rootView.addView(buildTabs());
-        return rootView;
+        AbsListView.OnScrollListener scroll = new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView view, int state) {
+            }
+
+            @Override
+            public void onScroll(AbsListView view, int first, int visible, int total) {
+                updateBarColor();
+            }
+        };
+        grid.setOnScrollListener(scroll);
+        albumGrid.setOnScrollListener(scroll);
+
+        if (root) column.addView(nav = buildNav());
+
+        toolbar = buildToolbar();
+        frame.addView(toolbar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
+        toolbar.setVisibility(View.GONE);
+
+        frame.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets in) {
+                insets = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                applyInsets();
+                return WindowInsets.CONSUMED;
+            }
+        });
+        return frame;
     }
 
     private View buildNormalBar() {
         LinearLayout bar = new LinearLayout(this);
         normalBar = bar;
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(root ? 20 : 4), 0, dp(8), 0);
+        bar.setGravity(root ? Gravity.BOTTOM : Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(root ? 20 : 4), 0, dp(12), root ? dp(12) : 0);
         if (!root) {
             ImageView back = Theme.iconButton(this, R.drawable.ic_back, "Πίσω");
             back.setOnClickListener(new View.OnClickListener() {
@@ -430,8 +531,9 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         }
         titleView = new TextView(this);
         titleView.setTextColor(Theme.TEXT);
-        titleView.setTextSize(root ? 24 : 20);
-        titleView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        titleView.setTextSize(root ? 32 : 22);
+        titleView.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        titleView.setLetterSpacing(root ? -0.01f : 0);
         titleView.setSingleLine(true);
         titleView.setEllipsize(TextUtils.TruncateAt.END);
         titleView.setPadding(root ? 0 : dp(8), 0, 0, 0);
@@ -441,10 +543,11 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         emptyTrash = new TextView(this);
         emptyTrash.setText("Άδειασμα");
         emptyTrash.setTextColor(Theme.RED);
-        emptyTrash.setTextSize(15);
+        emptyTrash.setTextSize(14);
+        emptyTrash.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         emptyTrash.setGravity(Gravity.CENTER);
-        emptyTrash.setPadding(dp(14), 0, dp(14), 0);
-        emptyTrash.setBackground(Theme.ripple(0, dp(20)));
+        emptyTrash.setPadding(dp(16), 0, dp(16), 0);
+        emptyTrash.setBackground(Theme.ripple(0, dp(20), Theme.RED));
         emptyTrash.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -460,7 +563,6 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(4), 0, dp(4), 0);
-        bar.setBackgroundColor(Theme.SURFACE);
         bar.addView(action(R.drawable.ic_close, "Ακύρωση επιλογής", new Runnable() {
             @Override
             public void run() {
@@ -469,7 +571,7 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         }));
         selectCount = new TextView(this);
         selectCount.setTextColor(Theme.TEXT);
-        selectCount.setTextSize(17);
+        selectCount.setTextSize(22);
         selectCount.setSingleLine(true);
         selectCount.setEllipsize(TextUtils.TruncateAt.END);
         selectCount.setPadding(dp(8), 0, 0, 0);
@@ -481,6 +583,15 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
                 grid.selectAll();
             }
         }));
+        return bar;
+    }
+
+    /** Floating toolbar with the actions for the selection (Material 3 Expressive). */
+    private LinearLayout buildToolbar() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setPadding(dp(8), dp(8), dp(8), dp(8));
+        bar.setBackground(Theme.rounded(Theme.HIGH, dp(32)));
+        bar.setElevation(dp(6));
         if (mode == Media.TRASH) {
             bar.addView(action(R.drawable.ic_restore, "Επαναφορά", new Runnable() {
                 @Override
@@ -537,27 +648,31 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         box.setGravity(Gravity.CENTER);
         box.setPadding(dp(32), 0, dp(32), dp(48));
         emptyIcon = new ImageView(this);
-        emptyIcon.setImageTintList(ColorStateList.valueOf(Theme.DIM));
-        box.addView(emptyIcon, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        emptyIcon.setImageTintList(ColorStateList.valueOf(Theme.ON_ACCENT_BG));
+        emptyIcon.setBackground(Theme.cookie(Theme.ACCENT_BG, dp(112)));
+        int p = dp(34);
+        emptyIcon.setPadding(p, p, p, p);
+        box.addView(emptyIcon, new LinearLayout.LayoutParams(dp(112), dp(112)));
         emptyTitle = new TextView(this);
         emptyTitle.setTextColor(Theme.TEXT);
-        emptyTitle.setTextSize(18);
+        emptyTitle.setTextSize(22);
         emptyTitle.setGravity(Gravity.CENTER);
-        emptyTitle.setPadding(0, dp(16), 0, 0);
+        emptyTitle.setPadding(0, dp(24), 0, 0);
         box.addView(emptyTitle);
         emptyText = new TextView(this);
         emptyText.setTextColor(Theme.DIM);
-        emptyText.setTextSize(14);
+        emptyText.setTextSize(15);
         emptyText.setGravity(Gravity.CENTER);
+        emptyText.setLineSpacing(0, 1.15f);
         emptyText.setPadding(0, dp(8), 0, 0);
         box.addView(emptyText);
         emptyButton = new TextView(this);
-        emptyButton.setTextColor(0xFF0F1115);
-        emptyButton.setTextSize(15);
+        emptyButton.setTextColor(Theme.ON_ACCENT);
+        emptyButton.setTextSize(16);
         emptyButton.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         emptyButton.setGravity(Gravity.CENTER);
-        emptyButton.setPadding(dp(24), 0, dp(24), 0);
-        emptyButton.setBackground(Theme.ripple(Theme.ACCENT, dp(24)));
+        emptyButton.setPadding(dp(28), 0, dp(28), 0);
+        emptyButton.setBackground(Theme.ripple(Theme.ACCENT, dp(28), Theme.ON_ACCENT));
         emptyButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -565,35 +680,51 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
                 else load();
             }
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
-        lp.topMargin = dp(24);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(56));
+        lp.topMargin = dp(28);
         box.addView(emptyButton, lp);
         return box;
     }
 
-    private View buildTabs() {
+    /** Material 3 navigation bar: a pill behind the selected icon, label underneath. */
+    private LinearLayout buildNav() {
         LinearLayout bar = new LinearLayout(this);
         bar.setBackgroundColor(Theme.SURFACE);
         String[] names = {"Φωτογραφίες", "Άλμπουμ"};
         int[] icons = {R.drawable.ic_photos, R.drawable.ic_albums};
         for (int i = 0; i < 2; i++) {
             final int t = i;
-            TextView tv = new TextView(this);
-            tv.setText(names[i]);
-            tv.setTextSize(12);
-            tv.setGravity(Gravity.CENTER);
-            tv.setCompoundDrawablesWithIntrinsicBounds(0, icons[i], 0, 0);
-            tv.setCompoundDrawablePadding(dp(2));
-            tv.setPadding(0, dp(10), 0, dp(10));
-            tv.setBackground(Theme.ripple(0, 0));
-            tv.setOnClickListener(new View.OnClickListener() {
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER_HORIZONTAL);
+            item.setPadding(0, dp(12), 0, dp(16));
+            item.setContentDescription(names[i]);
+            FrameLayout pill = new FrameLayout(this);
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(icons[i]);
+            pill.addView(icon, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+            pill.setBackground(null);
+            pill.setDuplicateParentStateEnabled(true);
+            item.addView(pill, new LinearLayout.LayoutParams(dp(64), dp(32)));
+            TextView label = new TextView(this);
+            label.setText(names[i]);
+            label.setTextSize(12);
+            label.setGravity(Gravity.CENTER);
+            label.setPadding(0, dp(4), 0, 0);
+            label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            item.addView(label);
+            // the ripple hugs the pill, as in Material 3
+            pill.setForeground(Theme.ripple(0, dp(16)));
+            item.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     selectTab(t);
                 }
             });
-            tabs[i] = tv;
-            bar.addView(tv, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            tabIndicators[i] = pill;
+            tabIcons[i] = icon;
+            tabLabels[i] = label;
+            bar.addView(item, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         }
         return bar;
     }
@@ -604,8 +735,7 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
         g.setColumnWidth(dp(150));
         g.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
         g.setHorizontalSpacing(dp(12));
-        g.setVerticalSpacing(dp(16));
-        g.setPadding(dp(12), dp(4), dp(12), dp(16));
+        g.setVerticalSpacing(dp(20));
         g.setClipToPadding(false);
         g.setSelector(android.R.color.transparent);
         g.setAdapter(albums);
@@ -685,31 +815,32 @@ public class MainActivity extends Activity implements MediaGrid.Listener {
                 card = new LinearLayout(c);
                 card.setOrientation(LinearLayout.VERTICAL);
                 CellView cover = new CellView(c);
-                cover.setRadius(dp(14));
+                cover.setRadius(dp(24));
                 cover.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
                 card.addView(cover);
                 TextView name = new TextView(c);
                 name.setTextColor(Theme.TEXT);
-                name.setTextSize(15);
+                name.setTextSize(16);
+                name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
                 name.setSingleLine(true);
                 name.setEllipsize(TextUtils.TruncateAt.END);
-                name.setPadding(dp(2), dp(8), dp(2), 0);
+                name.setPadding(dp(4), dp(10), dp(4), 0);
                 card.addView(name);
                 TextView count = new TextView(c);
                 count.setTextColor(Theme.DIM);
-                count.setTextSize(13);
-                count.setPadding(dp(2), dp(1), dp(2), 0);
+                count.setTextSize(14);
+                count.setPadding(dp(4), dp(2), dp(4), 0);
                 card.addView(count);
             }
             Entry e = entries.get(position);
             CellView cover = (CellView) card.getChildAt(0);
             cover.bind(e.cover, false, false);
             if (e.icon != 0) {
-                android.graphics.drawable.Drawable d = c.getDrawable(e.icon).mutate();
-                d.setTint(Theme.DIM);
-                cover.setIcon(d);
+                Drawable d = c.getDrawable(e.icon).mutate();
+                d.setTint(Theme.ON_ACCENT_BG);
+                cover.setIcon(d, Theme.ACCENT_BG);
             } else {
-                cover.setIcon(null);
+                cover.setIcon(null, Theme.HIGH);
             }
             ((TextView) card.getChildAt(1)).setText(e.name);
             ((TextView) card.getChildAt(2)).setText(e.count);

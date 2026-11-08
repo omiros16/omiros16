@@ -26,6 +26,8 @@ final class CellView extends View implements Thumbs.Callback {
     private final Drawable heart;
     private final Drawable play;
     private Drawable icon;
+    private int placeholder = Theme.HIGH;
+    private final Path selectedClip = new Path();
 
     private Media media;
     private boolean selecting;
@@ -50,8 +52,9 @@ final class CellView extends View implements Thumbs.Callback {
     }
 
     /** Shown when there is no media to draw (empty favourites, the trash). */
-    void setIcon(Drawable d) {
+    void setIcon(Drawable d, int background) {
         icon = d;
+        placeholder = background;
         invalidate();
     }
 
@@ -92,8 +95,16 @@ final class CellView extends View implements Thumbs.Callback {
         int h = getHeight();
         if (w == 0) return;
         if (radius > 0) c.clipPath(clip);
-        float pad = selected ? w * 0.08f : 0;
+        float pad = selected ? w * 0.09f : 0;
         dst.set(pad, pad, w - pad, h - pad);
+        int saved = c.save();
+        if (selected) {
+            // a selected photo shrinks into a rounded tile, as in Android's own photo picker
+            float rr = Theme.dp(getContext(), 14);
+            selectedClip.reset();
+            selectedClip.addRoundRect(dst, rr, rr, Path.Direction.CW);
+            c.clipPath(selectedClip);
+        }
 
         Bitmap b = media == null ? null : thumbs.request(media, w, this);
         if (b != null) {
@@ -104,7 +115,7 @@ final class CellView extends View implements Thumbs.Callback {
             src.set((bw - side) / 2, (bh - side) / 2, (bw + side) / 2, (bh + side) / 2);
             c.drawBitmap(b, src, dst, bitmapPaint);
         } else {
-            fill.setColor(Theme.SURFACE);
+            fill.setColor(placeholder);
             c.drawRect(dst, fill);
             Drawable d = media == null ? icon : null;
             if (d != null) {
@@ -113,7 +124,10 @@ final class CellView extends View implements Thumbs.Callback {
                 d.draw(c);
             }
         }
-        if (media == null) return;
+        if (media == null) {
+            c.restoreToCount(saved);
+            return;
+        }
 
         int m = Theme.dp(getContext(), 6);
         int badge = Theme.dp(getContext(), 14);
@@ -137,19 +151,23 @@ final class CellView extends View implements Thumbs.Callback {
             }
         }
 
+        c.restoreToCount(saved);
+
         if (selecting) {
             float r = Theme.dp(getContext(), 11);
             float cx = m + r;
             float cy = m + r;
             if (selected) {
-                fill.setColor(0x33000000 | (Theme.ACCENT & 0x00FFFFFF));
-                c.drawRect(dst, fill);
                 fill.setStyle(Paint.Style.FILL);
+                fill.setColor(Theme.BG);
+                c.drawCircle(cx, cy, r + Theme.dp(getContext(), 2), fill);
                 fill.setColor(Theme.ACCENT);
                 c.drawCircle(cx, cy, r, fill);
                 fill.setStyle(Paint.Style.STROKE);
                 fill.setStrokeWidth(Theme.dp(getContext(), 2));
-                fill.setColor(0xFFFFFFFF);
+                fill.setStrokeCap(Paint.Cap.ROUND);
+                fill.setStrokeJoin(Paint.Join.ROUND);
+                fill.setColor(Theme.ON_ACCENT);
                 check.reset();
                 check.moveTo(cx - r * 0.45f, cy);
                 check.lineTo(cx - r * 0.1f, cy + r * 0.35f);

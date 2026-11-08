@@ -95,7 +95,7 @@ final class Actions {
         if (m.expires > 0) row(box, "Στον κάδο", "Σβήνεται οριστικά σε " + daysLeft(m.expires) + " ημέρες");
         ScrollView scroll = new ScrollView(a);
         scroll.addView(box);
-        new AlertDialog.Builder(a, R.style.DialogTheme)
+        new AlertDialog.Builder(a, Theme.dark ? android.R.style.Theme_DeviceDefault_Dialog_Alert : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
                 .setTitle("Πληροφορίες")
                 .setView(scroll)
                 .setPositiveButton("Οκ", null)

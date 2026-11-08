@@ -1,6 +1,10 @@
 package com.omiros.gallery;
 
 import android.app.Activity;
+import android.content.res.ColorStateList;
+import android.os.Build;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -69,7 +73,8 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        getWindow().setDecorFitsSystemWindows(false);
+        Theme.init(this);
+        Theme.edgeToEdge(this, true); // always on black
         WindowManager.LayoutParams lp = getWindow().getAttributes();
         lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         getWindow().setAttributes(lp);
@@ -155,9 +160,30 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
     }
 
     @Override
-    public void onBackPressed() {
+    public void onBackPressed() { // Android 11-12; newer versions use interceptBack()
         if (videoBox.getVisibility() == View.VISIBLE && !external) closeVideo();
         else super.onBackPressed();
+    }
+
+    private Object backCallback;
+
+    /** While a video is open, back closes it; otherwise the system's predictive back animation runs. */
+    private void interceptBack(boolean on) {
+        if (Build.VERSION.SDK_INT < 33) return;
+        OnBackInvokedDispatcher d = getOnBackInvokedDispatcher();
+        if (on && backCallback == null) {
+            OnBackInvokedCallback cb = new OnBackInvokedCallback() {
+                @Override
+                public void onBackInvoked() {
+                    closeVideo();
+                }
+            };
+            d.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+            backCallback = cb;
+        } else if (!on && backCallback != null) {
+            d.unregisterOnBackInvokedCallback((OnBackInvokedCallback) backCallback);
+            backCallback = null;
+        }
     }
 
     private Media current() {
@@ -256,10 +282,8 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
 
     private void setChrome(boolean show) {
         chrome = show;
-        top.animate().alpha(show ? 1 : 0).setDuration(150).start();
-        bottom.animate().alpha(show ? 1 : 0).setDuration(150).start();
-        top.setVisibility(show ? View.VISIBLE : View.INVISIBLE);
-        bottom.setVisibility(show ? View.VISIBLE : View.INVISIBLE);
+        Theme.fadeIn(top, show);
+        Theme.fadeIn(bottom, show);
         systemBars(show);
     }
 
@@ -284,6 +308,7 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
         }
         if (fav != null) {
             fav.setImageResource(m.favorite ? R.drawable.ic_heart_filled : R.drawable.ic_heart);
+            fav.setImageTintList(ColorStateList.valueOf(m.favorite ? 0xFFFFB3C1 : 0xFFFFFFFF));
             String d = m.favorite ? "Αφαίρεση από τα αγαπημένα" : "Προσθήκη στα αγαπημένα";
             fav.setContentDescription(d);
             fav.setTooltipText(d);
@@ -329,11 +354,13 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
         videoBox.setVisibility(View.VISIBLE);
         systemBars(false);
         videoBox.play(m.uri);
+        if (!external) interceptBack(true);
     }
 
     private void closeVideo() {
         videoBox.stop();
         videoBox.setVisibility(View.GONE);
+        interceptBack(false);
         if (external) {
             finish();
             return;
@@ -356,7 +383,7 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
         LinearLayout topBar = new LinearLayout(this);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
         topBar.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0xB3000000, 0x00000000}));
-        ImageView back = Theme.iconButton(this, R.drawable.ic_back, "Πίσω");
+        ImageView back = Theme.iconButton(this, R.drawable.ic_back, "Πίσω", 0xFFFFFFFF);
         back.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -369,7 +396,7 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         title = new TextView(this);
-        title.setTextColor(Theme.TEXT);
+        title.setTextColor(0xFFFFFFFF);
         title.setTextSize(17);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setSingleLine(true);
@@ -384,9 +411,12 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
         top = topBar;
         root.addView(topBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
 
+        // floating toolbar (Material 3 Expressive)
         LinearLayout bottomBar = new LinearLayout(this);
         bottomBar.setGravity(Gravity.CENTER);
-        bottomBar.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xB3000000, 0x00000000}));
+        bottomBar.setPadding(dp(8), dp(8), dp(8), dp(8));
+        bottomBar.setBackground(Theme.rounded(0xE6202226, dp(32)));
+        bottomBar.setElevation(dp(6));
         addAction(bottomBar, R.drawable.ic_share, "Κοινοποίηση", new Runnable() {
             @Override
             public void run() {
@@ -434,7 +464,8 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
             });
         }
         bottom = bottomBar;
-        root.addView(bottomBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+        root.addView(bottomBar, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
 
         videoBox = new VideoPlayer(this, new Runnable() {
             @Override
@@ -443,7 +474,9 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
                 closeVideo();
             }
         });
-        ImageView close = Theme.iconButton(this, R.drawable.ic_close, "Κλείσιμο βίντεο");
+        ImageView close = Theme.iconButton(this, R.drawable.ic_close, "Κλείσιμο βίντεο", 0xFFFFFFFF);
+        close.setBackground(Theme.rounded(0x66000000, dp(24)));
+        close.setForeground(Theme.ripple(0, dp(24), 0xFFFFFFFF));
         close.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -451,10 +484,11 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
             }
         });
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.START);
-        clp.setMargins(dp(4), dp(8), 0, 0);
-        videoBox.addView(close, clp);
+        clp.setMargins(dp(8), dp(8), 0, 0);
+        videoBox.controls().addView(close, clp);
         videoClose = close;
         videoBox.setVisibility(View.GONE);
+        videoBox.setElevation(dp(16)); // above the floating toolbar, which has its own elevation
         root.addView(videoBox);
 
         root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -463,9 +497,9 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
                 // ignoring visibility keeps the bars still while the system bars hide and show
                 Insets i = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
                 top.setPadding(i.left, i.top, i.right, 0);
-                bottom.setPadding(i.left, 0, i.right, i.bottom + dp(8));
-                videoClose.setTranslationX(i.left);
-                videoClose.setTranslationY(i.top);
+                ((FrameLayout.LayoutParams) bottom.getLayoutParams()).bottomMargin = i.bottom + dp(20);
+                bottom.requestLayout();
+                videoBox.setInsets(i);
                 return insets;
             }
         });
@@ -473,15 +507,15 @@ public class ViewerActivity extends Activity implements Pager.Host, ZoomView.Lis
     }
 
     private ImageView addAction(LinearLayout bar, int icon, String description, final Runnable run) {
-        ImageView b = Theme.iconButton(this, icon, description);
+        ImageView b = Theme.iconButton(this, icon, description, 0xFFFFFFFF);
         b.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (current() != null) run.run();
             }
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(56), 1);
-        lp.topMargin = dp(24);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        lp.leftMargin = lp.rightMargin = dp(6);
         bar.addView(b, lp);
         return b;
     }
