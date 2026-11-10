@@ -207,6 +207,16 @@ final class HistoryScreen extends Screen {
             statRow("Διακύμανση μέρας", "±" + Fmt.num1(next.spread * 100) + "%",
                     next.learned >= 3 ? "από τις " + next.learned + " τελευταίες προπονήσεις σου" : "αρχική εκτίμηση");
         }
+        // Strength right now: the last sessions, counting the reps the rated sets had left.
+        double now = 0;
+        boolean rated = false;
+        for (int k = Math.max(0, h.size() - 3); k < h.size(); k++) {
+            now = Math.max(now, h.get(k).bestEstimate());
+            rated |= h.get(k).rated();
+        }
+        if (now > 0 && rated) {
+            statRow("Δύναμη τώρα ≈1RM", Fmt.num1(now) + " kg", "με όσα reps σου περίσσευαν");
+        }
         if (b.bestE1rm > 0) {
             statRow("Ρεκόρ ≈1RM", Fmt.num1(b.bestE1rm) + " kg", Fmt.kg(b.bestE1rmWeight) + " × " + b.bestE1rmReps
                     + ", " + Fmt.day(bestDay, today));

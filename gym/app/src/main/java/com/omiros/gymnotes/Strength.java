@@ -10,9 +10,10 @@ import java.util.TreeMap;
  * A set is a PR only when, compared with everything done before in that exercise:
  * <ul>
  * <li>{@link #WEIGHT}: it is heavier than any set before;</li>
- * <li>{@link #E1RM}: its estimated one-rep max beats the best so far. Epley, w × (1 + reps / 30),
- *     with reps capped at {@link #REP_CAP} because the estimate inflates for long sets (a set of
- *     20 counts as a set of 12, so light high-rep sets can never fake strength);</li>
+ * <li>{@link #E1RM}: its estimated one-rep max beats the best so far. Wathan's curve
+ *     ({@link #share}), with reps capped at {@link #REP_CAP} because estimates from long sets are
+ *     unreliable (a set of 20 counts as a set of 12, so light high-rep sets can never fake
+ *     strength). Only what was lifted counts: how the set felt never makes a record;</li>
  * <li>{@link #REPS}: more reps than ever with that weight or heavier, for a weight that was used
  *     before (so there is a record at it to beat) and is at least {@link #REP_PR_MIN_SHARE} of the
  *     heaviest one (or bodyweight, 0 kg), so warm-ups and light pump sets never count.</li>
@@ -37,11 +38,34 @@ final class Strength {
         return Math.round(kg * 100);
     }
 
-    /** Estimated one-rep max (kg); 0 for bodyweight sets. */
+    /** Each rep that was left in a set makes it this much lighter relative to the one-rep max. */
+    static final double PER_REP_LEFT = 0.025;
+    /** Reps left behind each rating: at the limit 0, normal 1-2, easy 3 or more (counted as 3). */
+    private static final double[] REPS_LEFT = {0, 3, 1.5, 0};
+
+    /**
+     * The share of the one-rep max that can be lifted for {@code reps} reps (Wathan 1994):
+     * 1 for a single, else 0.488 + 0.538 e^(-0.075 reps), e.g. 76% for 9 reps.
+     */
+    static double share(int reps) {
+        return reps <= 1 ? 1 : 0.488 + 0.538 * Math.exp(-0.075 * reps);
+    }
+
+    /** Estimated one-rep max (kg) from what was lifted; 0 for bodyweight sets. */
     static double e1rm(double weight, int reps) {
         if (weight <= 0 || reps <= 0) return 0;
-        if (reps == 1) return weight;
-        return weight * (1 + Math.min(reps, REP_CAP) / 30.0);
+        return weight / share(Math.min(reps, REP_CAP));
+    }
+
+    /**
+     * The same, also counting the reps the set had left ({@link Coach#EASY} etc., 0 = not rated,
+     * read as none left): a set stopped early was a smaller share of the maximum. Shown as the
+     * current strength; never used for records.
+     */
+    static double e1rm(double weight, int reps, int feel) {
+        if (weight <= 0 || reps <= 0) return 0;
+        double left = feel >= 0 && feel < REPS_LEFT.length ? REPS_LEFT[feel] : 0;
+        return weight / Math.max(0.30, share(Math.min(reps, REP_CAP)) - left * PER_REP_LEFT);
     }
 
     /** The best results among the sets added so far (add them in the order they were done). */

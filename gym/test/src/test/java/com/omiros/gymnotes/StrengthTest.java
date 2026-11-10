@@ -24,16 +24,47 @@ public class StrengthTest {
     }
 
     @Test
-    public void estimatedOneRepMaxIsEpleyCappedAtTwelveReps() {
+    public void estimatedOneRepMaxFollowsWathanCappedAtTwelveReps() {
+        // 1RM = weight / (0.488 + 0.538 e^(-0.075 reps)); a single is the weight itself.
         assertEquals(100, Strength.e1rm(100, 1), 1e-9);
-        assertEquals(100 * (1 + 5 / 30.0), Strength.e1rm(100, 5), 1e-9);
-        assertEquals(50 * 1.4, Strength.e1rm(50, 12), 1e-9);
+        assertEquals(1, Strength.share(1), 1e-9);
+        assertEquals(0.4880 + 0.538 * Math.exp(-0.375), Strength.share(5), 1e-12);
+        assertEquals(0.762, Strength.share(9), 0.0005);
+        assertEquals(116.6, Strength.e1rm(100, 5), 0.05);
+        assertEquals(68.9, Strength.e1rm(52.5, 9), 0.05);
+        assertEquals(70.7, Strength.e1rm(50, 12), 0.05);
         // Long sets do not keep inflating the estimate.
         assertEquals(Strength.e1rm(50, 12), Strength.e1rm(50, 20), 1e-9);
         assertEquals(Strength.e1rm(50, 12), Strength.e1rm(50, 100), 1e-9);
         // Bodyweight and empty sets have no estimate.
         assertEquals(0, Strength.e1rm(0, 15), 1e-9);
         assertEquals(0, Strength.e1rm(50, 0), 1e-9);
+    }
+
+    @Test
+    public void repsLeftRaiseTheCurrentEstimateButNeverARecord() {
+        // 2.5% of the maximum per rep left: at the limit 0, normal 1.5, easy 3.
+        assertEquals(Strength.e1rm(52.5, 9), Strength.e1rm(52.5, 9, Coach.HARD), 1e-9);
+        assertEquals(Strength.e1rm(52.5, 9), Strength.e1rm(52.5, 9, 0), 1e-9);
+        assertEquals(52.5 / (Strength.share(9) - 0.0375), Strength.e1rm(52.5, 9, Coach.NORMAL), 1e-9);
+        assertEquals(52.5 / (Strength.share(9) - 0.075), Strength.e1rm(52.5, 9, Coach.EASY), 1e-9);
+        assertEquals(72.5, Strength.e1rm(52.5, 9, Coach.NORMAL), 0.05);
+        assertEquals(76.4, Strength.e1rm(52.5, 9, Coach.EASY), 0.05);
+        Session s = new Session(1);
+        s.add(50, 10, Coach.EASY);
+        s.add(52.5, 9, Coach.HARD);
+        assertEquals(Strength.e1rm(52.5, 9), s.bestE1rm(), 1e-9);
+        assertEquals(Strength.e1rm(50, 10, Coach.EASY), s.bestEstimate(), 1e-9);
+        assertTrue(s.bestEstimate() > s.bestE1rm());
+        // Records look only at weight and reps: the same sets rated easy are no PR.
+        List<Session> h = new ArrayList<>();
+        h.add(session(1, 50, 10, 50, 9));
+        Session easy = new Session(8);
+        easy.add(50, 10, Coach.EASY);
+        easy.add(50, 9, Coach.EASY);
+        h.add(easy);
+        Strength.markPrs(h);
+        assertEquals(0, h.get(1).flags);
     }
 
     @Test
@@ -50,9 +81,9 @@ public class StrengthTest {
     @Test
     public void heavierThanEverIsAWeightRecord() {
         Strength.Bests b = bests(50, 10, 50, 9, 50, 8);
-        // 52.5 x 9 is heavier and its estimate (68.25) also beats 50 x 10 (66.67).
+        // 52.5 x 9 is heavier and its estimate (68.9) also beats 50 x 10 (67.4).
         assertEquals(Strength.WEIGHT | Strength.E1RM, b.judge(52.5, 9));
-        // 52.5 x 6 is heavier, but as an estimate (63.0) it is below the best: weight record only.
+        // 52.5 x 6 is heavier, but as an estimate (63.2) it is below the best: weight record only.
         assertEquals(Strength.WEIGHT, b.judge(52.5, 6));
         // The same weight and reps again: nothing.
         assertEquals(0, b.judge(50, 10));
@@ -64,7 +95,7 @@ public class StrengthTest {
         Strength.Bests b = bests(50, 10, 50, 9, 47.5, 8);
         // 11 reps at 50 beats the 10 done there: more reps, and a better estimate.
         assertEquals(Strength.REPS | Strength.E1RM, b.judge(50, 11));
-        // 47.5 x 11: more than ever at 47.5 or heavier (10), but the estimate (64.9) stays below 66.67.
+        // 47.5 x 11: more than ever at 47.5 or heavier (10), but the estimate (65.6) stays below 67.4.
         assertEquals(Strength.REPS, b.judge(47.5, 11));
         // 47.5 x 10 only matches what was done with a heavier weight.
         assertEquals(0, b.judge(47.5, 10));
@@ -106,14 +137,14 @@ public class StrengthTest {
         Strength.Bests b = Strength.markPrs(h);
         assertEquals(0, h.get(0).flags);
         assertEquals(0, h.get(1).flags);
-        // 60 x 7 = 74.0 beats 60 x 6 = 72.0 (reps + estimate); 62.5 x 5 = 72.9 is heavier but no better estimate.
+        // 60 x 7 = 74.4 beats 60 x 6 = 72.2 (reps + estimate); 62.5 x 5 = 72.9 is heavier but no better estimate.
         assertEquals(Strength.REPS | Strength.E1RM | Strength.WEIGHT, h.get(2).flags);
         assertEquals(0, h.get(3).flags);
         assertEquals(62.5, b.maxWeight, 1e-9);
         assertEquals(5, b.maxWeightReps);
         assertEquals(60, b.bestE1rmWeight, 1e-9);
         assertEquals(7, b.bestE1rmReps);
-        assertEquals(60 * (1 + 7 / 30.0), b.bestE1rm, 1e-9);
+        assertEquals(Strength.e1rm(60, 7), b.bestE1rm, 1e-9);
     }
 
     @Test
@@ -133,9 +164,9 @@ public class StrengthTest {
 
     @Test
     public void tinyDifferencesAreNotRecords() {
-        // 100 x 6 and 90 x 10 both estimate 120.0 kg.
+        // 100 x 6 estimates 120.34 kg; 89.3 x 10 estimates 120.34 too: inside the margin, no record.
         Strength.Bests b = bests(100, 6);
-        assertEquals("the same estimate is no record", 0, b.judge(90, 10) & Strength.E1RM);
+        assertEquals("the same estimate is no record", 0, b.judge(89.3, 10) & Strength.E1RM);
         assertTrue((b.judge(92.5, 10) & Strength.E1RM) != 0);
         // Weights compare in hundredths of a kg, so 52.5 typed twice is one weight.
         Strength.Bests c = bests(52.5, 8);

@@ -676,7 +676,7 @@ public class GymUiTest {
         start();
         Db db = a.db;
         long t = Fmt.today();
-        assertEquals(4, db.getReadableDatabase().getVersion());
+        assertEquals(5, db.getReadableDatabase().getVersion());
         Db.Exercise squat = db.exercise(1);
         assertEquals(3, squat.sessions);
         assertEquals(t - 7, squat.lastDay);

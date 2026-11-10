@@ -53,6 +53,13 @@ final class Session {
         return best;
     }
 
+    /** Best estimate counting the reps each set had left, see {@link Strength#e1rm(double, int, int)}. */
+    double bestEstimate() {
+        double best = 0;
+        for (int i = 0; i < n; i++) best = Math.max(best, Strength.e1rm(weight[i], reps[i], feel[i]));
+        return best;
+    }
+
     int maxReps() {
         int best = 0;
         for (int i = 0; i < n; i++) best = Math.max(best, reps[i]);

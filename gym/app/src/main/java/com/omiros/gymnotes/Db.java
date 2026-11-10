@@ -53,7 +53,7 @@ final class Db extends SQLiteOpenHelper {
             "e.id, e.name, e.last_day, e.sessions, e.best_e1rm, e.max_weight, e.last_pr";
 
     Db(Context context) {
-        super(context, "gym.db", null, 4);
+        super(context, "gym.db", null, 5);
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -87,7 +87,8 @@ final class Db extends SQLiteOpenHelper {
      * like the other stats. Version 3: how each set felt ({@code log_set.feel}), replacing the one
      * rating per exercise and day of version 2 ({@code log_note}). Version 4: no new columns; the
      * cached automatic weight step no longer counts warm-up sets, so it is recomputed (as after
-     * every upgrade).
+     * every upgrade). Version 5: no new columns; the estimated 1RM follows Wathan's curve, so the
+     * cached records are recomputed.
      */
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
