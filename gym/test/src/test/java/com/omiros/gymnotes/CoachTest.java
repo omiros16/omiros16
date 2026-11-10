@@ -368,6 +368,114 @@ public class CoachTest {
         assertAdvice(next(list(s(0, 6, 14, 14, 14)), range(8, 12, 1)), Coach.UP, 7, 7, 7, 7);
     }
 
+    /** Follows the advice for {@code n} sessions as someone with this 1RM (growing 0.4% a session) can. */
+    static List<Session> follow(List<Session> h, Coach.Settings st, double oneRm, int n) {
+        for (int i = 0; i < n; i++) {
+            long day = h.get(h.size() - 1).day + 7;
+            oneRm *= 1.004;
+            Coach.Advice a = Coach.next(h, st, day);
+            Session s = new Session(day);
+            for (int k = 0; k < a.reps.length; k++) {
+                double strength = oneRm * (1 - 0.03 * k);
+                int can = a.weight > strength ? 0 : Math.max(1, (int) Math.floor(30 * (strength / a.weight - 1) + 1e-9));
+                if (Math.min(a.reps[k], can) > 0) s.add(a.weight, Math.min(a.reps[k], can));
+            }
+            if (s.n == 0) s.add(a.weight, 1);
+            h.add(s);
+        }
+        return h;
+    }
+
+    @Test
+    public void afterAnEarnedJumpTheRepsAreBuiltAtTheNewWeight() {
+        // 6 kg x 16 earned the 8 kg dumbbells, where only about 4 reps are possible.
+        Coach.Settings st = range(8, 12, 2);
+        List<Session> h = list(s(0, 6, 16, 16, 16));
+        assertAdvice(next(h, st), Coach.UP, 8, 4, 4, 4);
+        h.add(s(7, 8, 4, 4, 4));
+        // Not "too heavy, back to 6 kg": that would send them up and down for ever.
+        Coach.Advice a = next(h, st);
+        assertAdvice(a, Coach.MORE_REPS, 8, 5, 5, 5);
+        h.add(s(14, 8, 5, 4, 4));
+        assertAdvice(next(h, st), Coach.MORE_REPS, 8, 6, 5, 5);
+        // The same on a machine in 5 kg steps.
+        Coach.Settings five = range(8, 12, 5);
+        List<Session> m = list(s(0, 20, 16, 16, 16), s(7, 25, 6, 6, 6));
+        assertAdvice(next(m, five), Coach.MORE_REPS, 25, 7, 7, 7);
+    }
+
+    @Test
+    public void coarseStepsStillClimb() {
+        double[][] cases = {{6, 2, 8.6}, {8, 2, 11.5}, {20, 5, 28.5}, {15, 5, 21.5}};
+        for (double[] c : cases) {
+            Coach.Settings st = range(8, 12, c[1]);
+            List<Session> h = follow(list(s(0, c[0], 12, 12, 12)), st, c[2], 90);
+            String what = Fmt.kg(c[0]) + " kg in " + Fmt.kg(c[1]) + " kg steps";
+            double top = 0;
+            for (int i = 1; i < h.size(); i++) {
+                double before = Coach.work(h.get(i - 1)).top;
+                double now = Coach.work(h.get(i)).top;
+                // Never up one session and back down the next.
+                if (i >= 2 && before > Coach.work(h.get(i - 2)).top) {
+                    assertTrue(what + ", session " + i + ": " + Fmt.sets(h.get(i - 1)) + " then " + Fmt.sets(h.get(i)), now >= before);
+                }
+                top = Math.max(top, now);
+            }
+            assertTrue(what + " reached " + Fmt.kg(top), top >= c[0] + c[1]);
+            assertEquals(what, top, Coach.work(h.get(h.size() - 1)).top, 1e-9);
+        }
+    }
+
+    @Test
+    public void aDipAtAWeightAlreadyHandledIsNotTooHeavy() {
+        // 85 kg went 8, 7, 6 twice; one day at the limit with 7, 6, 4 does not make 85 kg too heavy.
+        List<Session> h = list(s(0, 85, 8, 7, 6), s(7, 85, 8, 7, 6), rated(14, 85, r(7, 6, 4), r(H, H, H)));
+        Coach.Advice a = next(h, range(8, 12));
+        assertTrue(a.reason, a.kind != Coach.DOWN);
+        assertEquals(85, a.weight, 1e-9);
+        // Without any session near the range at that weight it is too heavy.
+        assertAdvice(next(list(rated(0, 85, r(7, 6, 4), r(H, H, H))), range(8, 12)), Coach.DOWN, 80, 8, 7, 5);
+        // Going heavier than advised is not "the advice moved me up": back into the range.
+        assertAdvice(next(list(s(0, 50, 12, 12, 12), s(7, 60, 3, 3, 2)), range(8, 12)), Coach.DOWN, 50, 9, 9, 8);
+        // Moved up as advised and far under the range the first time: build there.
+        assertAdvice(next(list(s(0, 50, 12, 12, 12), s(7, 52.5, 6, 5, 5)), range(8, 12)), Coach.MORE_REPS, 52.5, 7, 6, 6);
+    }
+
+    @Test
+    public void aStallIsNotDecidedOnADip() {
+        // Three flat sessions and one clearly worse (a rep per set): wait for the next one.
+        List<Session> h = repeat(3, 50, 10, 9, 8);
+        h.add(s(21, 50, 9, 8, 7));
+        assertEquals(Coach.MORE_REPS, next(h, range(8, 12)).kind);
+        // Back to the usual level and still no progress: now it is a stall.
+        h.add(s(28, 50, 10, 9, 8));
+        assertAdvice(next(h, range(8, 12)), Coach.DOWN, 45, 10, 9, 8);
+        // A slightly worse last session (one rep in total) does not postpone it.
+        List<Session> flat = repeat(3, 50, 10, 9, 8);
+        flat.add(s(21, 50, 10, 9, 7));
+        assertEquals(Coach.DOWN, next(flat, range(8, 12)).kind);
+    }
+
+    @Test
+    public void warmUpJumpsDoNotSetTheWeightStep() {
+        // Warm-ups at 20 and 35 kg, work sets at 50 then 52.5 kg: the step is 2.5, not the 15 kg jumps.
+        List<Session> h = new ArrayList<>();
+        List<Long> weights = new ArrayList<>();
+        double[] work = {50, 50, 52.5};
+        for (int i = 0; i < work.length; i++) {
+            Session day = new Session(7L * i);
+            day.add(20, 10);
+            day.add(35, 5);
+            for (int k = 0; k < 3; k++) day.add(work[i], 10 - k);
+            h.add(day);
+            Coach.workWeights(day, weights);
+        }
+        assertEquals(new TreeSet<>(Arrays.asList(5000L, 5250L)), new TreeSet<>(weights));
+        assertEquals(2.5, Coach.withBaseline(null, h, weights).autoStep, 1e-9);
+        assertEquals(2.5, Coach.inferStep(h, 52.5), 1e-9);
+        assertEquals(2.5, next(h, null).step, 1e-9);
+    }
+
     @Test
     public void aWeightJumpOverTenPercentIsOneStepAndEarned() {
         double[] weights = {4, 5, 6, 8, 10, 12.5, 15, 20, 25, 40, 50, 100};

@@ -84,13 +84,13 @@ final class Coach {
          */
         int autoLow;
         int autoHigh;
-        /** The automatic weight step, from every weight ever used (a recent window can miss steps). */
+        /** The automatic weight step, from every work-set weight ever used (a recent window can miss steps). */
         double autoStep;
     }
 
     /**
      * {@code s} (or defaults) plus the automatic choices: the rep range from the exercise's first
-     * sessions and the weight step from all the weights (centi-kg) ever used in it.
+     * sessions and the weight step from all the work-set weights (centi-kg) ever used in it.
      */
     static Settings withBaseline(Settings s, List<Session> earliest, Collection<Long> weights) {
         Settings out = new Settings();
@@ -221,11 +221,17 @@ final class Coach {
      */
     static double inferStep(List<Session> h, double top) {
         TreeSet<Long> weights = new TreeSet<>();
-        for (Session s : h) {
-            for (int i = 0; i < s.n; i++) weights.add(Strength.centi(s.weight[i]));
-        }
+        for (Session s : h) workWeights(s, weights);
         double step = inferStep(weights);
         return step > 0 ? step : top > 0 && top < 10 ? 1 : 2.5;
+    }
+
+    /** Adds the weights (centi-kg) of a session's work sets: warm-up jumps say nothing about the step. */
+    static void workWeights(Session s, Collection<Long> into) {
+        double top = work(s).top;
+        for (int i = 0; i < s.n; i++) {
+            if (!isWarmUp(s.weight[i], top)) into.add(Strength.centi(s.weight[i]));
+        }
     }
 
     /** The step from distinct weights (centi-kg), or 0 if they show none. */
@@ -397,10 +403,13 @@ final class Coach {
             }
         }
         int bestCap = max(cap);
-        if (w.top > 0 && bestCap < a.low - 1) {
+        if (w.top > 0 && bestCap < a.low - 1 && !withinReach(h, w.top, a.low)
+                && !cameUp(all, end, settings, w, a.step)) {
             // Strength was normal, but the weight is too heavy for the rep range: back into it.
+            // Only if a lighter weight lands inside the range: with coarse steps (light dumbbells) the
+            // next one down may already be above it, and then the reps are built here.
             double to = intoRange(w.top, bestCap, a.low, a.step);
-            if (to < w.top) {
+            if (to < w.top && predict(w.top, bestCap, to) <= a.high) {
                 int[] r = new int[sets];
                 for (int i = 0; i < sets; i++) r[i] = Math.min(a.high, predict(w.top, i < cap.length ? cap[i] : cap[cap.length - 1], to));
                 set(a, DOWN, to, r);
@@ -417,6 +426,31 @@ final class Coach {
         }
         moreReps(a, w, good, sets);
         return a;
+    }
+
+    /**
+     * This weight was done within a rep of the range in an earlier recent session: reps under the
+     * range now are a dip, not a weight that is too heavy.
+     */
+    private static boolean withinReach(List<Session> h, double top, int low) {
+        for (int k = 0; k < h.size() - 1; k++) {
+            Work w = work(h.get(k));
+            if (Strength.centi(w.top) == Strength.centi(top) && max(capacities(w)) >= low - 1) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The last session was the first at a weight the advice itself had just moved up to. Few reps
+     * there are expected (a big step on light weights was earned with extra reps first), so they
+     * are built at the new weight instead of going straight back down.
+     */
+    private static boolean cameUp(List<Session> all, int end, Settings settings, Work w, double step) {
+        if (end < 2) return false;
+        Session prev = all.get(end - 2);
+        if (Strength.centi(work(prev).top) >= Strength.centi(w.top)) return false;
+        Advice before = decide(all, end - 1, settings, all.get(end - 1).day - prev.day, false);
+        return before.kind == UP && Strength.centi(w.top) <= Strength.centi(before.weight) + Strength.centi(step);
     }
 
     /** Every work set reached the top of the range (or would have): add weight. */
@@ -613,7 +647,8 @@ final class Coach {
      * Same top weight for {@link #STALL_SESSIONS} sessions and none after the first did better than
      * it (one good session in between is progress; a bad day alone is not a stall). Not again while
      * an earlier drop in weight (a deload or a come-back) is still among the recent sessions: that
-     * needs time to pay off.
+     * needs time to pay off. And not on a session clearly worse than the ones before it (a rep per
+     * set or more): that may be a bad day the form check could not see, so the next session decides.
      */
     static boolean stalled(List<Session> h) {
         int n = h.size();
@@ -621,6 +656,9 @@ final class Coach {
         for (int k = 1; k < n; k++) {
             if (Strength.centi(work(h.get(k)).top) < Strength.centi(work(h.get(k - 1)).top)) return false;
         }
+        List<Double> before = new ArrayList<>();
+        for (int k = n - STALL_SESSIONS; k < n - 1; k++) before.add(avg(work(h.get(k)).reps));
+        if (avg(work(h.get(n - 1)).reps) <= median(before) - 1) return false;
         long top = Strength.centi(work(h.get(n - 1)).top);
         for (int k = n - STALL_SESSIONS; k < n; k++) {
             if (Strength.centi(work(h.get(k)).top) != top) return false;

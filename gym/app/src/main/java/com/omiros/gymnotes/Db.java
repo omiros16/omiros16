@@ -53,7 +53,7 @@ final class Db extends SQLiteOpenHelper {
             "e.id, e.name, e.last_day, e.sessions, e.best_e1rm, e.max_weight, e.last_pr";
 
     Db(Context context) {
-        super(context, "gym.db", null, 3);
+        super(context, "gym.db", null, 4);
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -85,7 +85,9 @@ final class Db extends SQLiteOpenHelper {
     /**
      * Version 2: per-exercise progression settings (0 = automatic) and the automatic choices cached
      * like the other stats. Version 3: how each set felt ({@code log_set.feel}), replacing the one
-     * rating per exercise and day of version 2 ({@code log_note}).
+     * rating per exercise and day of version 2 ({@code log_note}). Version 4: no new columns; the
+     * cached automatic weight step no longer counts warm-up sets, so it is recomputed (as after
+     * every upgrade).
      */
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
@@ -483,13 +485,11 @@ final class Db extends SQLiteOpenHelper {
 
     /**
      * The automatic choices computed from scratch: rep range from the first 3 sessions, weight
-     * step from every distinct weight the exercise was done with.
+     * step from every distinct work-set weight the exercise was done with.
      */
     private static Coach.Settings baseline(List<Session> history) {
         List<Long> weights = new ArrayList<>();
-        for (Session s : history) {
-            for (int i = 0; i < s.n; i++) weights.add(Strength.centi(s.weight[i]));
-        }
+        for (Session s : history) Coach.workWeights(s, weights);
         return Coach.withBaseline(null, history.subList(0, Math.min(3, history.size())), weights);
     }
 
