@@ -166,7 +166,12 @@ final class Coach {
         return Strength.centi(weight) < WORKING * Strength.centi(top);
     }
 
-    /** Epley without the PR cap: it only compares an exercise with itself. */
+    /**
+     * Epley, w × (1 + reps / 30), without a rep cap: here it only compares an exercise with itself
+     * and turns reps at one weight into reps at the next. The 1RM that is shown and the records
+     * use Wathan's curve ({@link Strength#e1rm}); the two differ by under 1.5%, and moving the
+     * advice to it was tried and changed nothing for the better in the simulation.
+     */
     static double estimate(double w, int r) {
         return r <= 1 ? w : w * (1 + Math.min(r, 30) / 30.0);
     }

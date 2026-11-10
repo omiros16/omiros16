@@ -31,7 +31,7 @@ Hard constraints that follow from this toolchain:
 
 ### Shipping a new version
 
-1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 5 / 1.3.1).
+1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 6 / 1.4).
 2. `bash gym/build.sh`, then `cp gym/build/GymNotes.apk apk/GymNotes.apk`.
 3. Update `gym/README.md` (and screenshots if the UI changed).
 4. The user installs by downloading the APK onto the phone (send them `apk/GymNotes.apk`).
@@ -50,9 +50,9 @@ death (`Screen.restore`). Days are `LocalDate.toEpochDay()` longs everywhere.
 | `PresetScreen` | One program: its exercises with target / last time / PR, exercise picker dialog |
 | `ExerciseScreen` | Logging one exercise on one day: target, previous sets table, set rows with −/+ steppers, tick, per-set "Πώς ήταν;" rating, PR banner, next-time target |
 | `HistoryScreen` | Stats, `ChartView` (≈1RM per session), all sessions |
-| `Db` | SQLite (`gym.db`, version 4), all queries, cached per-exercise stats |
+| `Db` | SQLite (`gym.db`, version 5), all queries, cached per-exercise stats |
 | `Coach` | Progression advice: what to lift next time (pure logic, no Android) |
-| `Strength` | e1RM (Epley, reps capped at 12) and PR detection (pure logic) |
+| `Strength` | e1RM (Wathan curve, reps capped at 12) and PR detection (pure logic) |
 | `Session` | One exercise on one day: `weight[]`, `reps[]`, `feel[]`, `flags` |
 | `Backup` | JSON export/import (streamed), merge or replace |
 | `Fmt` | All text formatting (kg, dates, set lists, Greek labels) |
@@ -76,8 +76,13 @@ death (`Screen.restore`). Days are `LocalDate.toEpochDay()` longs everywhere.
 ### PR rules (`Strength`): never weight × reps
 
 A set is a PR only against all earlier sessions of that exercise: heavier weight ever (WEIGHT),
-higher estimated 1RM (E1RM, Epley with reps capped at 12 so 1 kg × 100 is never a PR), or more reps
+higher estimated 1RM (E1RM, Wathan: weight / (0.488 + 0.538 e^(-0.075 reps)), reps capped at 12 so 1 kg × 100 is never a PR), or more reps
 at a weight already used and ≥ 75% of the heaviest (REPS). The first session is the baseline, never a PR.
+
+Records use only weight and reps, never the rating (the user asked for this explicitly). The rating
+enters only `Strength.e1rm(w, r, feel)` (2.5% of the max per rep left; shown in History as
+"Δύναμη τώρα ≈1RM") and the coach. The coach still predicts reps with Epley internally: switching
+it to Wathan was tried and was no better in the simulation.
 
 ### Coach (`Coach.next`): the most delicate code; read its comments before touching it
 
