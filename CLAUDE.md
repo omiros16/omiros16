@@ -31,7 +31,7 @@ Hard constraints that follow from this toolchain:
 
 ### Shipping a new version
 
-1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 4 / 1.3).
+1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 5 / 1.3.1).
 2. `bash gym/build.sh`, then `cp gym/build/GymNotes.apk apk/GymNotes.apk`.
 3. Update `gym/README.md` (and screenshots if the UI changed).
 4. The user installs by downloading the APK onto the phone (send them `apk/GymNotes.apk`).
@@ -50,7 +50,7 @@ death (`Screen.restore`). Days are `LocalDate.toEpochDay()` longs everywhere.
 | `PresetScreen` | One program: its exercises with target / last time / PR, exercise picker dialog |
 | `ExerciseScreen` | Logging one exercise on one day: target, previous sets table, set rows with −/+ steppers, tick, per-set "Πώς ήταν;" rating, PR banner, next-time target |
 | `HistoryScreen` | Stats, `ChartView` (≈1RM per session), all sessions |
-| `Db` | SQLite (`gym.db`, version 3), all queries, cached per-exercise stats |
+| `Db` | SQLite (`gym.db`, version 4), all queries, cached per-exercise stats |
 | `Coach` | Progression advice: what to lift next time (pure logic, no Android) |
 | `Strength` | e1RM (Epley, reps capped at 12) and PR detection (pure logic) |
 | `Session` | One exercise on one day: `weight[]`, `reps[]`, `feel[]`, `flags` |
@@ -83,11 +83,12 @@ at a weight already used and ≥ 75% of the heaviest (REPS). The first session i
 
 Double progression, built set by set from the per-set ratings: EASY +2 reps, NORMAL/unrated +1,
 HARD same. When every set reaches the top of the rep range, it goes up one weight step. Rep range is
-auto-detected from the first 3 sessions; the step from all weights used. It judges each session
+auto-detected from the first 3 sessions; the step from all work-set weights used (not warm-ups). It judges each session
 against the person's usual form: a bad day never cuts weight (the same target is retried), a great
 day moves at most one step. The bad/good thresholds start at −5% / +6% and adapt to the person's own
 day-to-day spread (`spread()`: own share = samples / (samples + 6), from up to 16 sessions; shown as
-"Διακύμανση μέρας" in History). Also: stall (4 sessions, no progress) → ~10% lighter; breaks of 14+
+"Διακύμανση μέρας" in History). Also: stall (4 sessions, no progress, last one not a dip) → ~10% lighter; reps under the range →
+a lighter weight, unless the advice itself just moved the weight up or it was near the range recently; breaks of 14+
 days → repeat, 28+ → lighter; never more than +10% in one jump. The user explicitly asked that
 advice be reliable or not exist at all, so any change here must be checked against many simulated
 lifters, not one example.
@@ -107,15 +108,25 @@ lifters, not one example.
 
 ## Testing
 
-There is currently **no test suite in the repo**. Earlier sessions used a Robolectric harness (Maven,
-Robolectric 4.14 with NATIVE graphics for screenshots; 35 tests: Strength, Coach rules, a coach
-simulation of 300 lifters × 6 behaviours, and UI flows incl. DB upgrades from v1/v2 and 2 years of
-data), but it lived in a temporary folder and was lost. If you change logic, recreate tests under
-`gym/test/` (in the repo) rather than in a scratch folder. Notes for rebuilding it: Google's Maven is
-not reachable, so `androidx.test` needs tiny local stubs; Java 21 needs
-`--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED`; point
-Robolectric at the app with a `com/android/tools/test_config.properties` on the test classpath
-(`android_merged_manifest`, `android_resource_apk=gym/build/base.apk`, `android_custom_package`).
+`gym/test.sh` builds the app and runs the suite in `gym/test` (Maven + Robolectric 4.14, about a
+minute; extra arguments go to Maven, e.g. `-Dtest=CoachTest`). Run it after every change; add or
+adjust tests with the change.
+
+- `StrengthTest`: PR rules, formatting, parsing.
+- `CoachTest`: one situation per test for every coach rule. Expected numbers are worked out by hand
+  from the rule, not copied from the output.
+- `CoachSimTest`: 300 simulated people x 6 ways of training x 109 sessions with known real strength.
+  Checks invariants (no unsafe jump, never up then straight back down, a bad day almost never
+  lowers the weight, targets track real strength, ratings help). It writes `target/coach-sim.txt`;
+  read it before and after any change to `Coach` and keep the README's "Επαλήθευση" numbers in sync.
+- `GymUiTest`: the real Activity: a whole workout, export / import, upgrades from DB versions 1-3,
+  two years of data. `gym/test.sh -Dshots=<folder>` also writes the screenshots used in `gym/docs`.
+
+How it works: the pom adds `gym/app/src/main/java` and `gym/build/gen` (R.java) as sources and uses
+`.tools/android-all.jar`; `test_config.properties` points Robolectric at `gym/build/base.apk`.
+Google's Maven is not reachable from here, so `src/test/java/androidx/test` holds stand-ins for the
+few `androidx.test:monitor` classes Robolectric calls (see the README there). Maven Central sometimes
+answers 429; just run again. Tests may use lambdas (they are not dexed); app code may not.
 Nothing has been run on a real device by Claude; the user tests on their phone.
 
 ## Git
