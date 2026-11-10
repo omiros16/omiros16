@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Tests for Gym Notes. The app itself is built by ../build.sh (no Gradle); this project only
+  compiles the same sources next to the tests and runs them on the JVM with Robolectric.
+  Run ../test.sh, which builds the app first: the tests read its resources from ../build.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.omiros</groupId>
+  <artifactId>gymnotes-tests</artifactId>
+  <version>1</version>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>17</maven.compiler.release>
+    <android.all>14-robolectric-10818077</android.all>
+    <android.newest>15-robolectric-12650502</android.newest>
+    <robolectric>4.14.1</robolectric>
+  </properties>
+
+  <dependencies>
+    <!-- The very android.jar the app is compiled against, already downloaded by ../build.sh. -->
+    <dependency>
+      <groupId>org.robolectric</groupId>
+      <artifactId>android-all</artifactId>
+      <version>${android.all}</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/../../.tools/android-all.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>org.robolectric</groupId>
+      <artifactId>robolectric</artifactId>
+      <version>${robolectric}</version>
+      <scope>test</scope>
+      <exclusions>
+        <!-- Only on Google's Maven, which these builds do not use; see src/test/java/androidx. -->
+        <exclusion><groupId>androidx.test</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>androidx.test.espresso</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>androidx.test.ext</groupId><artifactId>*</artifactId></exclusion>
+        <exclusion><groupId>androidx.annotation</groupId><artifactId>*</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <testResources>
+      <testResource>
+        <directory>src/test/resources</directory>
+        <filtering>true</filtering>
+      </testResource>
+    </testResources>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>app-sources</id>
+            <phase>generate-sources</phase>
+            <goals><goal>add-source</goal></goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/../app/src/main/java</source>
+                <!-- R.java, written by aapt2 in ../build.sh -->
+                <source>${project.basedir}/../build/gen</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!--
+        The Android runtimes Robolectric needs: the one the tests run on (sdk in
+        robolectric.properties) and the newest one it knows, whose framework resources it always
+        reads. Robolectric would download them by itself on first use, but without retries; fetched
+        here, Maven retries and keeps them in ~/.m2.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.8.1</version>
+        <executions>
+          <execution>
+            <id>android-runtime</id>
+            <phase>process-test-resources</phase>
+            <goals><goal>get</goal></goals>
+            <configuration>
+              <artifact>org.robolectric:android-all-instrumented:${android.all}-i7</artifact>
+              <transitive>false</transitive>
+            </configuration>
+          </execution>
+          <execution>
+            <id>android-runtime-newest</id>
+            <phase>process-test-resources</phase>
+            <goals><goal>get</goal></goals>
+            <configuration>
+              <artifact>org.robolectric:android-all-instrumented:${android.newest}-i7</artifact>
+              <transitive>false</transitive>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <compilerArgs><arg>-Xlint:-options</arg></compilerArgs>
+          <showWarnings>false</showWarnings>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.2</version>
+        <configuration>
+          <argLine>-Xmx3g --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8</argLine>
+          <trimStackTrace>false</trimStackTrace>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
