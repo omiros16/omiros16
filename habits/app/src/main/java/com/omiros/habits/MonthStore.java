@@ -30,6 +30,8 @@ import java.util.TreeSet;
  *
  * Each file is read at most once and then kept in memory (a few hundred bytes a month), so drawing
  * the screen and working out streaks costs the same after years of use as in the first week.
+ * One instance serves the whole process (screen, notifications, lock service, widget), so they all
+ * see the same months.
  */
 final class MonthStore {
     static final int MAX_HABITS = 6;
@@ -42,9 +44,20 @@ final class MonthStore {
     /** Months that have a file, listed from disk once. */
     private TreeSet<YearMonth> stored;
 
-    MonthStore(Context context) {
+    private static MonthStore instance;
+
+    private MonthStore(Context context) {
         dir = new File(context.getFilesDir(), "months");
         settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+    }
+
+    static synchronized MonthStore get(Context context) {
+        if (instance == null) instance = new MonthStore(context.getApplicationContext());
+        return instance;
+    }
+
+    static int bit(int day) {
+        return 1 << (day - 1);
     }
 
     static final class Habit {
@@ -83,6 +96,10 @@ final class MonthStore {
     static final class Month {
         final YearMonth ym;
         final List<Habit> habits = new ArrayList<>();
+        /** Days taken off ("Ρεπό"): no pressure, the streak goes on, the day is left out of the share. */
+        int rest;
+        /** Days a pass unlocked the phone. */
+        int passes;
 
         Month(YearMonth ym) {
             this.ym = ym;
@@ -95,6 +112,14 @@ final class MonthStore {
             return null;
         }
 
+        boolean isRest(int day) {
+            return (rest & bit(day)) != 0;
+        }
+
+        boolean hasPass(int day) {
+            return (passes & bit(day)) != 0;
+        }
+
         int total() {
             int n = 0;
             for (Habit h : habits) n += h.count();
@@ -103,14 +128,15 @@ final class MonthStore {
 
         /**
          * Share of the possible ticks over the first {@code elapsedDays} days, 0–100. A habit added
-         * mid-month only counts the days since it was added.
+         * mid-month only counts the days since it was added; days off count for nothing.
          */
         int percent(int elapsedDays) {
             int possible = 0;
             int done = 0;
-            int mask = elapsedDays >= 31 ? -1 : (1 << elapsedDays) - 1;
+            int mask = (elapsedDays >= 31 ? -1 : (1 << elapsedDays) - 1) & ~rest;
             for (Habit h : habits) {
-                possible += Math.max(0, elapsedDays - h.since + 1);
+                int span = h.since > elapsedDays ? 0 : (elapsedDays >= 31 ? -1 : (1 << elapsedDays) - 1) & ~((1 << (h.since - 1)) - 1);
+                possible += Integer.bitCount(span & ~rest);
                 done += Integer.bitCount(h.days & mask);
             }
             if (possible == 0) return 0;
@@ -148,9 +174,29 @@ final class MonthStore {
                 if (h.since > 1) o.put("since", h.since);
                 habits.put(o);
             }
-            if (write(file(m.ym), new JSONObject().put("habits", habits).toString())) stored().add(m.ym);
+            JSONObject json = new JSONObject().put("habits", habits);
+            if (m.rest != 0) json.put("rest", days(m.rest));
+            if (m.passes != 0) json.put("passes", days(m.passes));
+            if (write(file(m.ym), json.toString())) stored().add(m.ym);
         } catch (JSONException ignored) {
         }
+    }
+
+    private static JSONArray days(int bits) {
+        JSONArray a = new JSONArray();
+        for (int d = 1; d <= 31; d++) {
+            if ((bits & bit(d)) != 0) a.put(d);
+        }
+        return a;
+    }
+
+    private static int bits(JSONArray a, int length) throws JSONException {
+        int b = 0;
+        for (int k = 0; a != null && k < a.length(); k++) {
+            int d = a.getInt(k);
+            if (d >= 1 && d <= length) b |= bit(d);
+        }
+        return b;
     }
 
     /** Earliest month with saved data, or null before anything has been saved. */
@@ -172,26 +218,28 @@ final class MonthStore {
 
     /**
      * Days in a row the habit was done, ending today, or ending yesterday while today is not ticked
-     * yet. {@code current} is today's month as shown, which may not have a file yet.
+     * yet. Days off neither count nor break it. {@code current} is today's month as shown, which may
+     * not have a file yet.
      */
     int streak(int habitId, LocalDate today, Month current) {
-        Habit h = current.find(habitId);
+        Month m = current;
+        Habit h = m.find(habitId);
         if (h == null) return 0;
-        YearMonth ym = current.ym;
         int day = today.getDayOfMonth();
         if (!h.isDone(day)) day--;
         int n = 0;
-        // A whole month at a time: count the run of ticks ending at `day`, and only if it reaches
-        // the 1st go on to the end of the month before.
+        // A whole month at a time: count the run of ticks (and days off) ending at `day`, and only if
+        // it reaches the 1st go on to the end of the month before.
         while (n < 3660) {
             if (day == 0) {
-                ym = ym.minusMonths(1);
-                h = load(ym).find(habitId);
+                m = load(m.ym.minusMonths(1));
+                h = m.find(habitId);
                 if (h == null) break;
-                day = ym.lengthOfMonth();
+                day = m.ym.lengthOfMonth();
             }
-            int run = Math.min(day, Integer.numberOfLeadingZeros(~(h.days << (32 - day))));
-            n += run;
+            int run = Math.min(day, Integer.numberOfLeadingZeros(~((h.days | m.rest) << (32 - day))));
+            int runMask = (day >= 32 ? -1 : (1 << day) - 1) & ~((1 << (day - run)) - 1);
+            n += run - Integer.bitCount(m.rest & ~h.days & runMask);
             if (run < day) break;
             day = 0;
         }
@@ -240,7 +288,8 @@ final class MonthStore {
     private Month read(YearMonth ym) {
         try {
             String raw = new String(file(ym).readFully(), StandardCharsets.UTF_8);
-            JSONArray habits = new JSONObject(raw).getJSONArray("habits");
+            JSONObject json = new JSONObject(raw);
+            JSONArray habits = json.getJSONArray("habits");
             Month m = new Month(ym);
             for (int i = 0; i < habits.length(); i++) {
                 JSONObject o = habits.getJSONObject(i);
@@ -253,6 +302,8 @@ final class MonthStore {
                 }
                 m.habits.add(h);
             }
+            m.rest = bits(json.optJSONArray("rest"), ym.lengthOfMonth());
+            m.passes = bits(json.optJSONArray("passes"), ym.lengthOfMonth());
             return m;
         } catch (IOException | JSONException e) {
             return null;

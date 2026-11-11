@@ -18,7 +18,8 @@ final class Theme {
     static final int ACCENT_SOFT = 0xFF3C5246;
     static final int ON_ACCENT = 0xFF1C2A22;  // tick and text on the accent
     static final int ADD_BORDER = 0xFF587464;  // dashed "new habit" outline
-    static final int RED = 0xFFEE8B78;
+    static final int RED = 0xFFEE8B78;  // locked, delete
+    static final int WARN = 0xFFE9B85C;  // a deadline less than an hour away
     static final int RIPPLE = 0x22FFFFFF;
 
     private Theme() {
