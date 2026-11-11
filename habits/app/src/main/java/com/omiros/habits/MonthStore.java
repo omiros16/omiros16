@@ -39,7 +39,7 @@ final class MonthStore {
 
     private final File dir;
     private final SharedPreferences settings;
-    /** Months that have a file, as read or last saved. The same object is handed out every time. */
+    /** Every month handed out, as read, started or last saved. The same object is handed out every time. */
     private final Map<YearMonth, Month> cache = new HashMap<>();
     /** Months that have a file, listed from disk once. */
     private TreeSet<YearMonth> stored;
@@ -145,9 +145,9 @@ final class MonthStore {
     }
 
     /**
-     * The month's habits and ticks. A month with a file is always the same object, so changing it
-     * and calling {@link #save} keeps every holder in step. A month without one is rebuilt from the
-     * latest earlier month each time (cheap, that month is in memory), so it can never go stale.
+     * The month's habits and ticks, always the same object for the same month, so changing it and
+     * calling {@link #save} keeps every holder (screen, widget, notifications) in step. A month
+     * without a file starts from the latest earlier month's habits and gets its file on the first save.
      */
     Month load(YearMonth ym) {
         Month m = own(ym);
@@ -157,6 +157,8 @@ final class MonthStore {
         if (prev != null) {
             for (Habit h : prev.habits) m.habits.add(new Habit(h.id, h.name));
         }
+        // Kept, so a tick from the widget and the screen land on the same copy.
+        cache.put(ym, m);
         return m;
     }
 

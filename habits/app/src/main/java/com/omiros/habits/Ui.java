@@ -16,8 +16,12 @@ import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.KeyEvent;
 import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -132,6 +136,34 @@ final class Ui {
     }
 
     /** Small grey heading above a group of settings. */
+    static EditText field(Context c, String hint, int type) {
+        EditText e = new EditText(c);
+        e.setHint(hint);
+        e.setTextColor(TEXT);
+        e.setHintTextColor(MUTED);
+        e.setSingleLine(true);
+        e.setInputType(type);
+        e.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
+        return e;
+    }
+
+    /** Shows a dialog that is mostly one text field: keyboard up, and the keyboard's Done presses OK. */
+    static void showTyping(Context c, final AlertDialog d, EditText input) {
+        input.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        input.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+                if (actionId != EditorInfo.IME_ACTION_DONE) return false;
+                d.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+                return true;
+            }
+        });
+        d.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        input.requestFocus();
+        d.show();
+        styleDialog(c, d);
+    }
+
     static TextView label(Context c, String s) {
         TextView tv = text(c, 13, DIM, true);
         tv.setText(s);

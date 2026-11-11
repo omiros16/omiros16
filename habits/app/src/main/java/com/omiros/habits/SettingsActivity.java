@@ -5,6 +5,7 @@ import static com.omiros.habits.Theme.*;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -27,6 +28,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
@@ -191,9 +193,7 @@ public class SettingsActivity extends Activity {
             content.addView(action("Στείλε δοκιμαστικό μήνυμα", false, new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    Friends.send(SettingsActivity.this, rules.on(today()), "Habits: δοκιμή",
-                            "Habits: Δοκιμή. Από εδώ θα μαθαίνεις όταν δεν κάνω τις συνήθειές μου.");
-                    Toast.makeText(SettingsActivity.this, "Στάλθηκε", Toast.LENGTH_SHORT).show();
+                    sendTest();
                 }
             }));
         }
@@ -391,6 +391,43 @@ public class SettingsActivity extends Activity {
 
     // ---------------------------------------------------------------- friends
 
+    /** Sends a test straight away (not through the outbox) and says what really happened. */
+    private void sendTest() {
+        final String text = "Habits: Δοκιμή. Από εδώ θα μαθαίνεις όταν δεν κάνω τις συνήθειές μου.";
+        Rules.Doc doc = rules.on(today());
+        if (!doc.phones.isEmpty()) {
+            boolean can = Friends.canSms(this);
+            if (can) Friends.sms(this, doc.phones, text);
+            Toast.makeText(this, can ? "SMS: στάλθηκε" : "SMS: δεν έχει δοθεί η άδεια για SMS", Toast.LENGTH_LONG).show();
+        }
+        if (doc.emails.isEmpty()) return;
+        if (!Friends.canEmail(this)) {
+            Toast.makeText(this, "Email: δεν έχει ρυθμιστεί το Gmail", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final List<String> to = new ArrayList<>(doc.emails);
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String result;
+                try {
+                    Friends.mail(app, to, "Habits: δοκιμή", text);
+                    result = "Email: στάλθηκε";
+                } catch (IOException e) {
+                    result = "Email: απέτυχε (" + e.getMessage() + ")";
+                }
+                final String message = result;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(app, message, Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }, "friends-test").start();
+    }
+
     private void editList(final boolean phones) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -398,7 +435,7 @@ public class SettingsActivity extends Activity {
         List<String> now = new ArrayList<>(phones ? rules.wanted().phones : rules.wanted().emails);
         final EditText[] fields = new EditText[Rules.MAX_FRIENDS];
         for (int i = 0; i < fields.length; i++) {
-            EditText e = field(phones ? "Τηλέφωνο " + (i + 1) : "Email " + (i + 1),
+            EditText e = Ui.field(this, phones ? "Τηλέφωνο " + (i + 1) : "Email " + (i + 1),
                     phones ? InputType.TYPE_CLASS_PHONE : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
             if (i < now.size()) e.setText(now.get(i));
             fields[i] = e;
@@ -440,10 +477,10 @@ public class SettingsActivity extends Activity {
                 + "κανονικός σου κωδικός: Λογαριασμός Google, Ασφάλεια, Επαλήθευση σε 2 βήματα, Κωδικοί εφαρμογών. "
                 + "Μένει αποθηκευμένος μόνο σε αυτό το κινητό και δεν μπαίνει στα αντίγραφα ασφαλείας.");
         box.addView(help);
-        final EditText user = field("Διεύθυνση Gmail", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        final EditText user = Ui.field(this, "Διεύθυνση Gmail", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
         user.setText(Friends.secret(this).getString("gmail", ""));
         box.addView(user, Ui.matchWrap());
-        final EditText pass = field("Κωδικός εφαρμογής (16 γράμματα)", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        final EditText pass = Ui.field(this, "Κωδικός εφαρμογής (16 γράμματα)", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         box.addView(pass, Ui.matchWrap());
         AlertDialog d = Ui.dialog(this)
                 .setTitle("Αποστολή email από")
@@ -472,14 +509,4 @@ public class SettingsActivity extends Activity {
         Ui.styleDialog(this, d);
     }
 
-    private EditText field(String hint, int type) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setTextColor(TEXT);
-        e.setHintTextColor(MUTED);
-        e.setSingleLine(true);
-        e.setInputType(type);
-        e.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
-        return e;
-    }
 }

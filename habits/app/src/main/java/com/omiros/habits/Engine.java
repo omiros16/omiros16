@@ -196,8 +196,8 @@ final class Engine {
     }
 
     /**
-     * End of {@code day}: avoid-habits that blocked their apps count as done unless a pass was used,
-     * and locked habits left undone are reported to friends.
+     * End of {@code day}: avoid-habits that blocked their apps count as done unless a pass was used
+     * or the lock was off, and locked habits left undone are reported to friends.
      */
     private static void closeDay(Context c, LocalDate day, boolean report) {
         Rules.Doc doc = Rules.get(c).on(day);
@@ -211,7 +211,8 @@ final class Engine {
         for (MonthStore.Habit h : m.habits) {
             if (h.since > d || h.isDone(d)) continue;
             Rules.Rule r = doc.rule(h.id);
-            if (r.avoid && r.block && !m.hasPass(d)) {
+            // Only if the lock was on: with it off, nothing kept the apps closed.
+            if (r.avoid && r.block && !m.hasPass(d) && LockService.isOn(c)) {
                 h.setDone(d, true);
                 changed = true;
             } else if (!r.avoid && r.level == Rules.LOCK && r.minute >= 0) {

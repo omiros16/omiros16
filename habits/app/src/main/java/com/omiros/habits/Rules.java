@@ -37,6 +37,9 @@ final class Rules {
     private Doc now;
     private Doc next;
     private LocalDate nextFrom;
+    /** The rules before the last change took effect, still the ones for the days before {@code beforeUntil}. */
+    private Doc before;
+    private LocalDate beforeUntil;
 
     static final class Rule {
         /** A habit of not doing something ("Χωρίς social media") rather than doing it. */
@@ -189,6 +192,10 @@ final class Rules {
             next = null;
             nextFrom = null;
         }
+        before = parse(prefs.getString("before", null));
+        String until = prefs.getString("before_until", null);
+        beforeUntil = until == null ? null : LocalDate.parse(until);
+        if (beforeUntil == null) before = null;
     }
 
     static synchronized Rules get(Context context) {
@@ -205,15 +212,21 @@ final class Rules {
         }
     }
 
-    /** The rules in force on {@code day}; reaching the day a pending change starts makes it current. */
+    /**
+     * The rules in force on {@code day}; reaching the day a pending change starts makes it current.
+     * A day before the change keeps its own rules, so yesterday closes under yesterday's rules even
+     * if something asked for today's first.
+     */
     Doc on(LocalDate day) {
         if (next != null && !day.isBefore(nextFrom)) {
+            before = now;
+            beforeUntil = nextFrom;
             now = next;
             next = null;
             nextFrom = null;
             persist();
         }
-        return now;
+        return before != null && day.isBefore(beforeUntil) ? before : now;
     }
 
     /** What the person last asked for (what settings screens show): tomorrow's rules if any are waiting. */
@@ -294,6 +307,7 @@ final class Rules {
         SharedPreferences.Editor e = prefs.edit().putString("now", now.toJson().toString());
         if (next != null) e.putString("next", next.toJson().toString()).putString("next_from", nextFrom.toString());
         else e.remove("next").remove("next_from");
+        if (before != null) e.putString("before", before.toJson().toString()).putString("before_until", beforeUntil.toString());
         // Written straight away: the rules decide what gets locked.
         e.commit();
     }

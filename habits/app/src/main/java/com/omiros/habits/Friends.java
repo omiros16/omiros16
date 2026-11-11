@@ -19,6 +19,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.List;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -37,6 +38,13 @@ final class Friends {
     private Friends() {
     }
 
+    /** Gmail answered "never" (5xx) for this message itself, as opposed to a network or login problem. */
+    static final class Refused extends IOException {
+        Refused(String message) {
+            super(message);
+        }
+    }
+
     /** The Gmail login lives in its own preferences file, left out of backups. */
     static SharedPreferences secret(Context c) {
         return c.getSharedPreferences("secret", Context.MODE_PRIVATE);
@@ -51,28 +59,42 @@ final class Friends {
         return !s.getString("gmail", "").isEmpty() && !s.getString("password", "").isEmpty();
     }
 
-    @SuppressWarnings("deprecation")
     static void send(Context c, Rules.Doc doc, String subject, String text) {
-        if (!doc.phones.isEmpty() && canSms(c)) {
-            SmsManager sms = Build.VERSION.SDK_INT >= 31 ? c.getSystemService(SmsManager.class) : SmsManager.getDefault();
-            for (String phone : doc.phones) {
-                try {
-                    sms.sendMultipartTextMessage(phone, null, parts(text), null, null);
-                } catch (RuntimeException ignored) {
-                    // A bad number, or a phone without SMS, must not stop the others.
-                }
-            }
-        }
+        if (!doc.phones.isEmpty() && canSms(c)) sms(c, doc.phones, text);
         if (!doc.emails.isEmpty() && canEmail(c)) {
             queue(c, new ArrayList<>(doc.emails), subject, text);
             retry(c);
         }
     }
 
+    @SuppressWarnings("deprecation")
+    static void sms(Context c, Collection<String> phones, String text) {
+        SmsManager sms = Build.VERSION.SDK_INT >= 31 ? c.getSystemService(SmsManager.class) : SmsManager.getDefault();
+        for (String phone : phones) {
+            try {
+                sms.sendMultipartTextMessage(phone, null, parts(text), null, null);
+            } catch (RuntimeException ignored) {
+                // A bad number, or a phone without SMS, must not stop the others.
+            }
+        }
+    }
+
+    /** One mail now, from the saved Gmail login. Blocks on the network: never on the main thread. */
+    static void mail(Context c, List<String> to, String subject, String text) throws IOException {
+        SharedPreferences s = secret(c);
+        smtp(SMTP_HOST, SMTP_PORT, true, s.getString("gmail", ""), s.getString("password", "").replace(" ", ""),
+                to, subject, text);
+    }
+
     /** 67 characters fit one part of a multi-part SMS even in Greek (UCS-2), the tightest encoding. */
     static ArrayList<String> parts(String text) {
         ArrayList<String> out = new ArrayList<>();
-        for (int i = 0; i < text.length(); i += 67) out.add(text.substring(i, Math.min(text.length(), i + 67)));
+        for (int i = 0, end; i < text.length(); i = end) {
+            end = Math.min(text.length(), i + 67);
+            // An emoji takes two chars; cutting between them would garble it in both parts.
+            if (end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))) end--;
+            out.add(text.substring(i, end));
+        }
         return out;
     }
 
@@ -117,9 +139,6 @@ final class Friends {
     }
 
     private static void flush(Context c) {
-        SharedPreferences s = secret(c);
-        String user = s.getString("gmail", "");
-        String password = s.getString("password", "").replace(" ", "");
         while (true) {
             JSONObject mail;
             synchronized (Friends.class) {
@@ -132,7 +151,9 @@ final class Friends {
                 JSONArray a = mail.optJSONArray("to");
                 for (int i = 0; a != null && i < a.length(); i++) to.add(a.optString(i));
                 try {
-                    smtp(SMTP_HOST, SMTP_PORT, true, user, password, to, mail.optString("subject"), mail.optString("text"));
+                    mail(c, to, mail.optString("subject"), mail.optString("text"));
+                } catch (Refused e) {
+                    // Retrying will never get it through; dropped so the mails behind it can go.
                 } catch (IOException e) {
                     return;
                 }
@@ -170,11 +191,16 @@ final class Friends {
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             OutputStream out = socket.getOutputStream();
             Base64.Encoder b64 = Base64.getEncoder();
-            expect(in, 220);
-            command(out, in, "EHLO habits", 250);
-            command(out, in, "AUTH LOGIN", 334);
-            command(out, in, b64.encodeToString(user.getBytes(StandardCharsets.UTF_8)), 334);
-            command(out, in, b64.encodeToString(password.getBytes(StandardCharsets.UTF_8)), 235);
+            try {
+                expect(in, 220);
+                command(out, in, "EHLO habits", 250);
+                command(out, in, "AUTH LOGIN", 334);
+                command(out, in, b64.encodeToString(user.getBytes(StandardCharsets.UTF_8)), 334);
+                command(out, in, b64.encodeToString(password.getBytes(StandardCharsets.UTF_8)), 235);
+            } catch (Refused e) {
+                // A wrong login is fixed in the settings; the mail waits for it rather than being dropped.
+                throw new IOException(e.getMessage());
+            }
             command(out, in, "MAIL FROM:<" + user + ">", 250);
             for (String t : to) command(out, in, "RCPT TO:<" + t + ">", 250);
             command(out, in, "DATA", 354);
@@ -213,6 +239,7 @@ final class Friends {
             line = in.readLine();
             if (line == null) throw new IOException("connection closed");
         } while (line.length() > 3 && line.charAt(3) == '-');
-        if (!line.startsWith(String.valueOf(code))) throw new IOException("SMTP: " + line);
+        if (line.startsWith(String.valueOf(code))) return;
+        throw line.startsWith("5") ? new Refused("SMTP: " + line) : new IOException("SMTP: " + line);
     }
 }

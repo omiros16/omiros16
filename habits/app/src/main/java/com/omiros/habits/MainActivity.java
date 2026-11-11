@@ -26,14 +26,11 @@ import android.util.SparseArray;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
-import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.view.animation.OvershootInterpolator;
-import android.view.inputmethod.EditorInfo;
 import android.widget.Chronometer;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -1041,15 +1038,8 @@ public class MainActivity extends Activity {
             content.addView(sub);
         }
 
-        final EditText input = new EditText(this);
-        input.setTextColor(TEXT);
-        input.setHintTextColor(MUTED);
-        input.setHint("π.χ. Διάβασμα 20 λεπτά");
-        input.setSingleLine(true);
+        final EditText input = Ui.field(this, "π.χ. Διάβασμα 20 λεπτά", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(MonthStore.MAX_NAME)});
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        input.setImeOptions(EditorInfo.IME_ACTION_DONE);
-        input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
         if (existing != null) {
             input.setText(existing.name);
             input.setSelection(input.getText().length());
@@ -1113,20 +1103,7 @@ public class MainActivity extends Activity {
                     }
                 })
                 .create();
-        input.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-            @Override
-            public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
-                if (actionId == EditorInfo.IME_ACTION_DONE) {
-                    dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-                    return true;
-                }
-                return false;
-            }
-        });
-        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
-        input.requestFocus();
-        dialog.show();
-        Ui.styleDialog(this, dialog);
+        Ui.showTyping(this, dialog, input);
     }
 
     /** Deadline, pressure level, lock reach and timer for one habit. */
@@ -1300,15 +1277,8 @@ public class MainActivity extends Activity {
         sub.setText("Λεπτά, από 1 ως " + MAX_TIMER);
         sub.setPadding(0, dp(2), 0, 0);
         content.addView(sub);
-        final EditText input = new EditText(this);
-        input.setTextColor(TEXT);
-        input.setHintTextColor(MUTED);
-        input.setHint("π.χ. 13");
-        input.setSingleLine(true);
+        final EditText input = Ui.field(this, "π.χ. 13", InputType.TYPE_CLASS_NUMBER);
         input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(3)});
-        input.setInputType(InputType.TYPE_CLASS_NUMBER);
-        input.setImeOptions(EditorInfo.IME_ACTION_DONE);
-        input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
         if (current > 0) {
             input.setText(String.valueOf(current));
             input.setSelection(input.getText().length());
@@ -1336,20 +1306,7 @@ public class MainActivity extends Activity {
                     }
                 })
                 .create();
-        input.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-            @Override
-            public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
-                if (actionId == EditorInfo.IME_ACTION_DONE) {
-                    dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-                    return true;
-                }
-                return false;
-            }
-        });
-        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
-        input.requestFocus();
-        dialog.show();
-        Ui.styleDialog(this, dialog);
+        Ui.showTyping(this, dialog, input);
     }
 
     private void saveRule(MonthStore.Habit h, Rules.Rule r) {
