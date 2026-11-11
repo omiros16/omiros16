@@ -101,7 +101,7 @@ public class SettingsActivity extends Activity {
 
         // ------------------------------------------------------------ pressure
         content.addView(Ui.label(this, "Πίεση"));
-        String state = now.on ? (want.on ? "Ειδοποιήσεις και κλειδώματα σύμφωνα με κάθε συνήθεια."
+        String state = now.on ? (want.on ? "Ενεργά, όπως τα έχεις ορίσει σε κάθε συνήθεια."
                 : "Κλείνουν από αύριο. Σήμερα ισχύουν ακόμα.") : "Σκέτο tracker: χωρίς ειδοποιήσεις και κλειδώματα.";
         content.addView(switchRow("Ειδοποιήσεις και κλειδώματα", state, want.on, new CompoundButton.OnCheckedChangeListener() {
             @Override

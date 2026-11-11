@@ -526,21 +526,13 @@ public class MainActivity extends Activity {
     }
 
     private void heroButtons(View... buttons) {
-        LinearLayout row = new LinearLayout(this);
-        boolean first = true;
+        Ui.Flow row = new Ui.Flow(this);
         for (View b : buttons) {
-            if (b == null) continue;
-            LinearLayout.LayoutParams lp = Ui.wrap();
-            if (!first) lp.leftMargin = dp(8);
-            row.addView(b, lp);
-            first = false;
+            if (b != null) row.addView(b);
         }
-        HorizontalScrollView h = new HorizontalScrollView(this);
-        h.setHorizontalScrollBarEnabled(false);
-        h.addView(row);
         LinearLayout.LayoutParams lp = Ui.matchWrap();
         lp.topMargin = dp(16);
-        hero.addView(h, lp);
+        hero.addView(row, lp);
     }
 
     private TextView doneButton(final MonthStore.Habit h, String label) {
@@ -1289,7 +1281,7 @@ public class MainActivity extends Activity {
     }
 
     private View choices(String[] labels, int selected, final Choice choice) {
-        LinearLayout row = new LinearLayout(this);
+        Ui.Flow row = new Ui.Flow(this);
         for (int i = 0; i < labels.length; i++) {
             final int k = i;
             TextView c = Ui.chip(this, labels[i], i == selected);
@@ -1299,14 +1291,9 @@ public class MainActivity extends Activity {
                     choice.picked(k);
                 }
             });
-            LinearLayout.LayoutParams lp = Ui.wrap();
-            lp.rightMargin = dp(6);
-            row.addView(c, lp);
+            row.addView(c);
         }
-        HorizontalScrollView h = new HorizontalScrollView(this);
-        h.setHorizontalScrollBarEnabled(false);
-        h.addView(row);
-        return h;
+        return row;
     }
 
     /** A time (or {@code none} when it can be cleared), opening a picker when tapped. */

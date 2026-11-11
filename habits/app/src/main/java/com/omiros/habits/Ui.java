@@ -15,6 +15,7 @@ import android.graphics.drawable.RippleDrawable;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -153,5 +154,64 @@ final class Ui {
 
     static AlertDialog.Builder dialog(Context c) {
         return new AlertDialog.Builder(c, R.style.DialogTheme);
+    }
+
+    /** Lays its children out left to right, wrapping to a new row when one is full. */
+    static final class Flow extends ViewGroup {
+        private final int gap;
+
+        Flow(Context c) {
+            super(c);
+            gap = dp(c, 8);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            boolean bounded = MeasureSpec.getMode(widthSpec) != MeasureSpec.UNSPECIFIED;
+            int max = MeasureSpec.getSize(widthSpec) - getPaddingLeft() - getPaddingRight();
+            int x = 0;
+            int y = 0;
+            int rowHeight = 0;
+            int widest = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i);
+                if (child.getVisibility() == GONE) continue;
+                child.measure(MeasureSpec.makeMeasureSpec(max, bounded ? MeasureSpec.AT_MOST : MeasureSpec.UNSPECIFIED),
+                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+                int w = child.getMeasuredWidth();
+                if (bounded && x > 0 && x + w > max) {
+                    x = 0;
+                    y += rowHeight + gap;
+                    rowHeight = 0;
+                }
+                x += w + gap;
+                rowHeight = Math.max(rowHeight, child.getMeasuredHeight());
+                widest = Math.max(widest, x - gap);
+            }
+            setMeasuredDimension(resolveSize(widest + getPaddingLeft() + getPaddingRight(), widthSpec),
+                    y + rowHeight + getPaddingTop() + getPaddingBottom());
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int l, int t, int r, int b) {
+            int max = r - l - getPaddingLeft() - getPaddingRight();
+            int x = 0;
+            int y = 0;
+            int rowHeight = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i);
+                if (child.getVisibility() == GONE) continue;
+                int w = child.getMeasuredWidth();
+                int h = child.getMeasuredHeight();
+                if (x > 0 && x + w > max) {
+                    x = 0;
+                    y += rowHeight + gap;
+                    rowHeight = 0;
+                }
+                child.layout(getPaddingLeft() + x, getPaddingTop() + y, getPaddingLeft() + x + w, getPaddingTop() + y + h);
+                x += w + gap;
+                rowHeight = Math.max(rowHeight, h);
+            }
+        }
     }
 }

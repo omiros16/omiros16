@@ -57,9 +57,9 @@ final class Friends {
             SmsManager sms = Build.VERSION.SDK_INT >= 31 ? c.getSystemService(SmsManager.class) : SmsManager.getDefault();
             for (String phone : doc.phones) {
                 try {
-                    sms.sendMultipartTextMessage(phone, null, sms.divideMessage(text), null, null);
+                    sms.sendMultipartTextMessage(phone, null, parts(text), null, null);
                 } catch (RuntimeException ignored) {
-                    // A bad number must not stop the others.
+                    // A bad number, or a phone without SMS, must not stop the others.
                 }
             }
         }
@@ -67,6 +67,13 @@ final class Friends {
             queue(c, new ArrayList<>(doc.emails), subject, text);
             retry(c);
         }
+    }
+
+    /** 67 characters fit one part of a multi-part SMS even in Greek (UCS-2), the tightest encoding. */
+    static ArrayList<String> parts(String text) {
+        ArrayList<String> out = new ArrayList<>();
+        for (int i = 0; i < text.length(); i += 67) out.add(text.substring(i, Math.min(text.length(), i + 67)));
+        return out;
     }
 
     private static synchronized void queue(Context c, List<String> to, String subject, String text) {
