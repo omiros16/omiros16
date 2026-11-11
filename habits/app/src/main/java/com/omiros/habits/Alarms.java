@@ -175,7 +175,8 @@ final class Alarms {
         LocalDate today = LocalDate.now();
         MonthStore.Habit h = MonthStore.get(c).load(YearMonth.from(today)).find(e.habitId);
         if (h == null) return;
-        Rules.Rule r = Rules.get(c).on(today).rule(h.id);
+        Rules.Doc doc = Rules.get(c).on(today);
+        Rules.Rule r = doc.rule(h.id);
         String text;
         if (e.left > 0) {
             text = "Μένουν " + Ui.duration(e.left) + ", ως τις " + Ui.time(r.minute) + ".";
@@ -188,8 +189,10 @@ final class Alarms {
                 .setContentTitle(h.name)
                 .setContentText(text)
                 .setCategory(Notification.CATEGORY_REMINDER)
-                .setAutoCancel(true)
-                .addAction(new Notification.Action.Builder(null, "Έγινε", broadcast(c, ACTION_DONE, h.id)).build());
+                .setAutoCancel(true);
+        if (!doc.timerOnly(h.id)) {
+            b.addAction(new Notification.Action.Builder(null, "Έγινε", broadcast(c, ACTION_DONE, h.id)).build());
+        }
         if (r.timer > 0) {
             b.addAction(new Notification.Action.Builder(null, "Χρονόμετρο " + r.timer + "'", broadcast(c, ACTION_TIMER, h.id)).build());
         }

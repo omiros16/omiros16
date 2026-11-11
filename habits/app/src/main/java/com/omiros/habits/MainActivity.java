@@ -536,6 +536,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView doneButton(final MonthStore.Habit h, String label) {
+        if (doc().timerOnly(h.id)) return null;
         TextView b = Ui.button(this, label, true, ACCENT);
         b.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -550,7 +551,8 @@ public class MainActivity extends Activity {
     private TextView timerButton(final MonthStore.Habit h) {
         Rules.Rule r = doc().rule(h.id);
         if (r.timer <= 0) return null;
-        TextView b = Ui.button(this, "Χρονόμετρο " + r.timer + "'", false, TEXT);
+        boolean only = doc().timerOnly(h.id);
+        TextView b = Ui.button(this, "Χρονόμετρο " + r.timer + "'", only, only ? ACCENT : TEXT);
         b.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -630,14 +632,7 @@ public class MainActivity extends Activity {
 
         rv.strip = new DotStrip(this);
         rv.strip.setPadding(0, dp(8), dp(2), dp(8));
-        rv.strip.setBackground(Ui.withRipple(this, null, dp(8)));
         rv.strip.setContentDescription("Μέρες του μήνα για " + h.name);
-        rv.strip.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openCalendar(h);
-            }
-        });
         col.addView(rv.strip, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(26)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
@@ -743,7 +738,7 @@ public class MainActivity extends Activity {
         }
         if (!month.habits.isEmpty()) {
             footer.addView(hint("Πάτα μια συνήθεια μόλις την κάνεις. Κράτα την πατημένη για ώρα, "
-                    + "ειδοποιήσεις, κλείδωμα και χρονόμετρο. Τα μεσάνυχτα ξετικάρονται όλες για τη νέα μέρα."));
+                    + "ειδοποιήσεις, κλείδωμα, χρονόμετρο και ημερολόγιο. Τα μεσάνυχτα ξετικάρονται όλες για τη νέα μέρα."));
         }
     }
 
@@ -800,12 +795,15 @@ public class MainActivity extends Activity {
         if (checkNewDay()) return;
         int d = today.getDayOfMonth();
         boolean done = !h.isDone(d);
-        Engine.setDone(this, h.id, today, done);
+        String message = null;
+        if (done) message = Engine.tick(this, h.id);
+        else Engine.setDone(this, h.id, today, false);
         refresh();
+        if (message != null) Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         RowViews rv = rows.get(h.id);
         if (rv != null && rv.check != null) {
             rv.check.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-            if (done) {
+            if (done && message == null) {
                 rv.check.setScaleX(0.6f);
                 rv.check.setScaleY(0.6f);
                 rv.check.animate().scaleX(1f).scaleY(1f).setDuration(260)
@@ -895,6 +893,10 @@ public class MainActivity extends Activity {
                         cell.setOnClickListener(new View.OnClickListener() {
                             @Override
                             public void onClick(View v) {
+                                if (!h.isDone(d) && ym.atDay(d).equals(LocalDate.now()) && doc().timerOnly(h.id)) {
+                                    Toast.makeText(MainActivity.this, "Σήμερα τικάρεται μόνο με το χρονόμετρο.", Toast.LENGTH_LONG).show();
+                                    return;
+                                }
                                 h.setDone(d, !h.isDone(d));
                                 store.save(m);
                                 v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
@@ -1203,6 +1205,21 @@ public class MainActivity extends Activity {
                             redraw[0].run();
                         }
                     }));
+                    if (r.timer > 0) {
+                        content.addView(Ui.label(MainActivity.this, "Τικ"));
+                        content.addView(choices(new String[]{"Και «Έγινε»", "Μόνο με χρονόμετρο"}, r.strict ? 1 : 0, new Choice() {
+                            @Override
+                            public void picked(int i) {
+                                r.strict = i == 1;
+                                redraw[0].run();
+                            }
+                        }));
+                        TextView note = text(13, DIM, false);
+                        note.setText(r.strict ? "Το τικ ξεκινά το χρονόμετρο. Τικάρεται μόνο όταν τελειώσει."
+                                : "Μπορείς να το τικάρεις αμέσως ή να βάλεις το χρονόμετρο.");
+                        note.setPadding(0, dp(8), 0, 0);
+                        content.addView(note);
+                    }
                 } else {
                     content.addView(Ui.label(MainActivity.this, "Μπλοκάρισμα της λίστας σου"));
                     content.addView(choices(new String[]{"Όχι", "Ναι"}, r.block ? 1 : 0, new Choice() {

@@ -86,17 +86,20 @@ public class LockActivity extends Activity {
             why.setPadding(0, Ui.dp(this, 2), 0, Ui.dp(this, 12));
             content.addView(why);
             LinearLayout row = new LinearLayout(this);
-            TextView done = Ui.button(this, "Έγινε", true, ACCENT);
-            done.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    Engine.setDone(LockActivity.this, h.id, LocalDate.now(), true);
-                    render();
-                }
-            });
-            row.addView(done);
+            boolean timerOnly = doc.timerOnly(h.id);
+            if (!timerOnly) {
+                TextView done = Ui.button(this, "Έγινε", true, ACCENT);
+                done.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        Engine.setDone(LockActivity.this, h.id, LocalDate.now(), true);
+                        render();
+                    }
+                });
+                row.addView(done);
+            }
             if (r.timer > 0) {
-                TextView timer = Ui.button(this, "Χρονόμετρο " + r.timer + "'", false, TEXT);
+                TextView timer = Ui.button(this, "Χρονόμετρο " + r.timer + "'", timerOnly, timerOnly ? ACCENT : TEXT);
                 timer.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -105,7 +108,7 @@ public class LockActivity extends Activity {
                     }
                 });
                 LinearLayout.LayoutParams lp = Ui.wrap();
-                lp.leftMargin = Ui.dp(this, 10);
+                if (!timerOnly) lp.leftMargin = Ui.dp(this, 10);
                 row.addView(timer, lp);
             }
             LinearLayout.LayoutParams rlp = Ui.matchWrap();

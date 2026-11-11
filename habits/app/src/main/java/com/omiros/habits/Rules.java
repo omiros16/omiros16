@@ -48,6 +48,8 @@ final class Rules {
         boolean all = true;
         /** Minutes of the timer, 0 for none. */
         int timer;
+        /** The habit can only be ticked by letting its timer run out (no plain "done"). */
+        boolean strict;
         /** Avoid-habits: block my list between {@code from} and {@code until} (minutes after midnight). */
         boolean block;
         int from;
@@ -67,7 +69,7 @@ final class Rules {
                 JSONObject o = new JSONObject();
                 if (avoid) o.put("avoid", true).put("block", block).put("from", from).put("until", until);
                 else o.put("min", minute).put("level", level).put("all", all);
-                return o.put("timer", timer);
+                return o.put("timer", timer).put("strict", strict);
             } catch (JSONException e) {
                 throw new IllegalStateException(e);
             }
@@ -80,6 +82,7 @@ final class Rules {
             r.level = Math.max(NONE, Math.min(LOCK, o.optInt("level")));
             r.all = o.optBoolean("all", true);
             r.timer = Math.max(0, o.optInt("timer"));
+            r.strict = o.optBoolean("strict");
             r.block = o.optBoolean("block");
             r.from = o.optInt("from");
             r.until = o.optInt("until", 24 * 60);
@@ -106,6 +109,12 @@ final class Rules {
         Rule rule(int habitId) {
             Rule r = habits.get(habitId);
             return r != null ? r : NO_RULE;
+        }
+
+        /** True if ticking the habit today has to go through its timer (off when the main switch is off). */
+        boolean timerOnly(int habitId) {
+            Rule r = rule(habitId);
+            return on && !r.avoid && r.strict && r.timer > 0;
         }
 
         boolean hasFriends() {
@@ -266,6 +275,11 @@ final class Rules {
                 r.block = true;
                 r.from = want.block ? Math.min(old.from, want.from) : old.from;
                 r.until = want.block ? Math.max(old.until, want.until) : old.until;
+            }
+            if (!old.avoid && old.strict && old.timer > 0) {
+                // Today the timer still has to be followed, and it does not get shorter.
+                r.strict = true;
+                r.timer = Math.max(old.timer, want.timer);
             }
             t.habits.put(e.getKey(), r);
         }

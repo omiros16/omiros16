@@ -5,8 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION_CODE=5
-VERSION_NAME=2.0
+VERSION_CODE=6
+VERSION_NAME=2.1
 MIN_SDK=26
 TARGET_SDK=34
 

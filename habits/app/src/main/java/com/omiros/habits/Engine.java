@@ -77,6 +77,28 @@ final class Engine {
         changed(c);
     }
 
+    /**
+     * "Done" for today from any button. A habit whose timer has to be followed gets its timer started
+     * instead, and is ticked when it runs out. Returns null if ticked, otherwise what to tell the person.
+     */
+    static String tick(Context c, int habitId) {
+        LocalDate today = LocalDate.now();
+        Rules.Doc doc = Rules.get(c).on(today);
+        if (!doc.timerOnly(habitId)) {
+            setDone(c, habitId, today, true);
+            return null;
+        }
+        // A timer that ran out but has not been handled yet (late alarm) counts as finished.
+        if (Alarms.timerHabit(c) >= 0 && Alarms.timerEnd(c) <= System.currentTimeMillis()) Alarms.finishTimer(c);
+        int running = Alarms.timerHabit(c);
+        if (running == habitId) return "Το χρονόμετρο τρέχει ήδη. Τικάρεται μόλις τελειώσει.";
+        MonthStore.Habit other = running < 0 ? null : MonthStore.get(c).load(YearMonth.from(today)).find(running);
+        // One timer at a time, and a stray tap must not throw away the one that runs.
+        if (other != null) return "Τρέχει το χρονόμετρο για «" + other.name + "». Σταμάτησέ το πρώτα.";
+        Alarms.startTimer(c, habitId);
+        return "Χρονόμετρο " + doc.rule(habitId).timer + "'. Τικάρεται μόλις τελειώσει.";
+    }
+
     /** After any change: re-arm the next notification, redraw the widget, recheck the app in front. */
     static void changed(Context c) {
         Alarms.reschedule(c);
