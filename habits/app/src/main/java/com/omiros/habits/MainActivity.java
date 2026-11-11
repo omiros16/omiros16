@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
             "Ειδοποιήσεις 2 ώρες πριν, 1 ώρα πριν και μετά κάθε 15 λεπτά ως την ώρα.",
             "Όπως το πρήξιμο, και στην ώρα το κινητό κλειδώνει μέχρι να το κάνεις."};
     private static final int[] TIMERS = {0, 10, 15, 20, 30, 45, 60};
+    private static final int MAX_TIMER = 240;
     private static final int REQ_NOTIF = 1;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -1191,18 +1192,30 @@ public class MainActivity extends Activity {
                             content.addView(note);
                         }
                     }
-                    String[] timers = new String[TIMERS.length];
-                    int sel = 0;
+                    // The usual lengths, then "Άλλο" for any number of minutes (shown as such once set).
+                    String[] timers = new String[TIMERS.length + 1];
+                    int sel = TIMERS.length;
                     for (int i = 0; i < TIMERS.length; i++) {
                         timers[i] = TIMERS[i] == 0 ? "Χωρίς" : TIMERS[i] + "'";
                         if (TIMERS[i] == r.timer) sel = i;
                     }
+                    timers[TIMERS.length] = sel == TIMERS.length ? r.timer + "'" : "Άλλο";
                     content.addView(Ui.label(MainActivity.this, "Χρονόμετρο"));
                     content.addView(choices(timers, sel, new Choice() {
                         @Override
                         public void picked(int i) {
-                            r.timer = TIMERS[i];
-                            redraw[0].run();
+                            if (i < TIMERS.length) {
+                                r.timer = TIMERS[i];
+                                redraw[0].run();
+                                return;
+                            }
+                            askMinutes(r.timer, new Choice() {
+                                @Override
+                                public void picked(int minutes) {
+                                    r.timer = minutes;
+                                    redraw[0].run();
+                                }
+                            });
                         }
                     }));
                     if (r.timer > 0) {
@@ -1273,6 +1286,70 @@ public class MainActivity extends Activity {
                 })
                 .show();
         Ui.styleDialog(this, d);
+    }
+
+    /** Any length for the timer, typed in minutes. */
+    private void askMinutes(int current, final Choice choice) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22), dp(22), dp(22), 0);
+        TextView title = text(19, TEXT, true);
+        title.setText("Χρονόμετρο");
+        content.addView(title);
+        TextView sub = text(13, DIM, false);
+        sub.setText("Λεπτά, από 1 ως " + MAX_TIMER);
+        sub.setPadding(0, dp(2), 0, 0);
+        content.addView(sub);
+        final EditText input = new EditText(this);
+        input.setTextColor(TEXT);
+        input.setHintTextColor(MUTED);
+        input.setHint("π.χ. 13");
+        input.setSingleLine(true);
+        input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(3)});
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        input.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
+        if (current > 0) {
+            input.setText(String.valueOf(current));
+            input.setSelection(input.getText().length());
+        }
+        LinearLayout.LayoutParams lp = Ui.matchWrap();
+        lp.topMargin = dp(12);
+        content.addView(input, lp);
+        final AlertDialog dialog = Ui.dialog(this)
+                .setView(content)
+                .setNegativeButton("Άκυρο", null)
+                .setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        int m;
+                        try {
+                            m = Integer.parseInt(input.getText().toString().trim());
+                        } catch (NumberFormatException e) {
+                            m = 0;
+                        }
+                        if (m >= 1 && m <= MAX_TIMER) {
+                            choice.picked(m);
+                        } else {
+                            Toast.makeText(MainActivity.this, "Από 1 ως " + MAX_TIMER + " λεπτά.", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                })
+                .create();
+        input.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+                if (actionId == EditorInfo.IME_ACTION_DONE) {
+                    dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+                    return true;
+                }
+                return false;
+            }
+        });
+        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        input.requestFocus();
+        dialog.show();
+        Ui.styleDialog(this, dialog);
     }
 
     private void saveRule(MonthStore.Habit h, Rules.Rule r) {
