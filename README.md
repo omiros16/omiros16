@@ -5,6 +5,8 @@
 
 <img src="docs/screenshot.png" width="300">
 
+> Στο ίδιο repo: [**Habits**](habits/), καθημερινές συνήθειες που τικάρεις και μετράνε ανά μήνα.
+
 ## Εγκατάσταση
 
 Κατέβασε το [`apk/Timetable.apk`](apk/Timetable.apk) στο κινητό και άνοιξέ το. Το Android θα

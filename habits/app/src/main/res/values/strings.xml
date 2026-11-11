@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Habits</string>
+    <string name="lock_service_description">Κλειδώνει τις εφαρμογές όταν περάσει η ώρα μιας συνήθειας με κλείδωμα και δεν την έχεις κάνει, και μπλοκάρει τη λίστα σου στις ώρες αποχής. Δεν διαβάζει τίποτα από τις οθόνες: βλέπει μόνο ποια εφαρμογή είναι μπροστά.</string>
+    <string name="widget_description">Οι σημερινές συνήθειες: τικάρεις με ένα πάτημα.</string>
+</resources>

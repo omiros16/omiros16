@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">#FF33363B</item>
+        <item name="android:colorPrimaryDark">#FF33363B</item>
+        <item name="android:colorAccent">#FF7ACFA2</item>
+        <item name="android:windowBackground">@drawable/bg</item>
+        <item name="android:statusBarColor">#FF33363B</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#FF33363B</item>
+        <item name="android:colorBackground">#FF3E4147</item>
+    </style>
+
+    <style name="DialogTheme" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#FF7ACFA2</item>
+        <item name="android:colorBackground">#FF3E4147</item>
+        <item name="android:textColorPrimary">#FFF0F1F2</item>
+    </style>
+    <style name="WidgetRow">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">0dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:minHeight">30dp</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textColor">#FFF0F1F2</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+</resources>

@@ -5,16 +5,19 @@
 #   dx                           <- dalvik-dx
 #   APK signing (v2)        <- apksig
 # Requires: JDK 17+, python3, curl.  Output: build/Timetable.apk
+# habits/build.sh runs this same script for Habits, setting NAME, PROJECT and the version.
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT=$(cd "$(dirname "$0")" && pwd)
+NAME=${NAME:-Timetable}
+VERSION_CODE=${VERSION_CODE:-7}
+VERSION_NAME=${VERSION_NAME:-1.6}
+cd "${PROJECT:-$ROOT}"
 
-VERSION_CODE=7
-VERSION_NAME=1.6
 MIN_SDK=26
 TARGET_SDK=34
 
 M=https://repo1.maven.org/maven2
-T=.tools
+T=$ROOT/.tools
 B=build
 mkdir -p "$T"
 
@@ -47,9 +50,9 @@ echo "==> dex"
 java -cp "$T/dx.jar" com.android.dx.command.Main --dex --min-sdk-version=$MIN_SDK --output="$B/classes.dex" "$B/classes"
 
 echo "==> package + sign"
-python3 tools/package.py "$B/base.apk" "$B/classes.dex" "$B/unsigned.apk"
-javac -nowarn -cp "$T/apksig.jar" -d "$B/signer" tools/Sign.java
+python3 "$ROOT/tools/package.py" "$B/base.apk" "$B/classes.dex" "$B/unsigned.apk"
+javac -nowarn -cp "$T/apksig.jar" -d "$B/signer" "$ROOT/tools/Sign.java"
 java --add-exports java.base/sun.security.x509=ALL-UNNAMED --add-exports java.base/sun.security.pkcs=ALL-UNNAMED --add-exports java.base/sun.security.util=ALL-UNNAMED \
-    -cp "$B/signer:$T/apksig.jar" Sign keystore/timetable.p12 timetable timetable "$B/unsigned.apk" "$B/Timetable.apk"
+    -cp "$B/signer:$T/apksig.jar" Sign "$ROOT/keystore/timetable.p12" timetable timetable "$B/unsigned.apk" "$B/$NAME.apk"
 
-echo "==> done: $B/Timetable.apk"
+echo "==> done: $B/$NAME.apk"
