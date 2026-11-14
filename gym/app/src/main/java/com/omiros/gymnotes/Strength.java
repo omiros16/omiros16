@@ -147,12 +147,21 @@ final class Strength {
      * including the earlier sets of the same day. Returns the bests over the whole history.
      */
     static Bests markPrs(List<Session> sessions) {
+        return markPrs(sessions, null);
+    }
+
+    /** The same, also giving the flags of every single set: {@code perSet[session][set]}. */
+    static Bests markPrs(List<Session> sessions, int[][] perSet) {
         Bests b = new Bests();
-        for (Session s : sessions) {
+        for (int k = 0; k < sessions.size(); k++) {
+            Session s = sessions.get(k);
             boolean baseline = b.sets == 0;
             int f = 0;
+            if (perSet != null) perSet[k] = new int[s.n];
             for (int i = 0; i < s.n; i++) {
-                if (!baseline) f |= b.judge(s.weight[i], s.reps[i]);
+                int set = baseline ? 0 : b.judge(s.weight[i], s.reps[i]);
+                if (perSet != null) perSet[k][i] = set;
+                f |= set;
                 b.add(s.weight[i], s.reps[i]);
             }
             s.flags = f;

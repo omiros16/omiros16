@@ -4,9 +4,6 @@ import static com.omiros.gymnotes.Theme.*;
 
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.InsetDrawable;
-import android.text.SpannableStringBuilder;
-import android.text.Spanned;
-import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -27,6 +24,8 @@ final class HistoryScreen extends Screen {
     private final long exerciseId;
     private Db.Exercise exercise;
     private final List<Session> sessions = new ArrayList<>();
+    /** PR flags of each set of {@link #sessions}, same order. */
+    private final List<int[]> setFlags = new ArrayList<>();
     private ListView list;
     private SessionAdapter adapter;
     private LinearLayout stats;
@@ -151,11 +150,16 @@ final class HistoryScreen extends Screen {
         setTitle(exercise.name, presets.isEmpty() ? "Σε κανένα πρόγραμμα" : presets);
 
         List<Session> h = db.history(exerciseId);
-        Strength.Bests b = Strength.markPrs(h);
+        int[][] perSet = new int[h.size()][];
+        Strength.Bests b = Strength.markPrs(h, perSet);
         fillStats(h, b);
         fillChart(h);
         sessions.clear();
-        for (int i = h.size() - 1; i >= 0; i--) sessions.add(h.get(i));
+        setFlags.clear();
+        for (int i = h.size() - 1; i >= 0; i--) {
+            sessions.add(h.get(i));
+            setFlags.add(perSet[i]);
+        }
         listTitle.setVisibility(h.isEmpty() ? View.GONE : View.VISIBLE);
         adapter.notifyDataSetChanged();
     }
@@ -337,26 +341,16 @@ final class HistoryScreen extends Screen {
                 h = new Holder();
                 LinearLayout item = ui.column();
                 item.setBackground(ui.ripple(0, 0));
-                item.setPadding(ui.dp(20), ui.dp(14), ui.dp(20), ui.dp(14));
+                item.setPadding(ui.dp(20), ui.dp(16), ui.dp(20), ui.dp(12));
                 LinearLayout top = ui.row();
-                h.date = ui.text(15, SOFT, ui.semibold);
+                h.date = ui.text(16, TEXT, ui.semibold);
                 top.addView(h.date, Ui.fill());
                 h.score = ui.text(13, DIM, false);
                 top.addView(h.score);
                 item.addView(top);
-                h.sets = ui.figures(19, TEXT, true);
-                h.sets.setPadding(0, ui.dp(6), 0, 0);
+                h.sets = ui.column();
+                h.sets.setPadding(0, ui.dp(8), 0, 0);
                 item.addView(h.sets);
-                h.feel = ui.text(13, DIM, false);
-                h.feel.setPadding(0, ui.dp(5), 0, 0);
-                item.addView(h.feel);
-                h.pr = ui.row();
-                h.pr.setPadding(0, ui.dp(6), 0, 0);
-                h.pr.addView(ui.icon(R.drawable.ic_trophy, MARK), ui.size(16, 16));
-                h.prText = ui.text(13, MARK, true);
-                h.prText.setPadding(ui.dp(6), 0, 0, 0);
-                h.pr.addView(h.prText);
-                item.addView(h.pr);
                 item.setTag(h);
                 convertView = item;
             } else {
@@ -366,34 +360,49 @@ final class HistoryScreen extends Screen {
             h.date.setText(Fmt.day(s.day, Fmt.today()));
             double e = s.bestE1rm();
             h.score.setText(e > 0 ? "≈1RM " + Fmt.num1(e) + " kg" : "max " + s.maxReps() + " reps");
-            h.sets.setText(Ui.quiet(Fmt.sets(s)));
-            h.feel.setText(feelLine(s));
-            h.feel.setVisibility(s.rated() ? View.VISIBLE : View.GONE);
-            h.prText.setText(Fmt.badges(s.flags));
-            h.pr.setVisibility(s.flags != 0 ? View.VISIBLE : View.GONE);
+            // One line per set, in the order they were done: number, weight × reps, how it felt, and
+            // the record that very set made.
+            h.sets.removeAllViews();
+            int[] flags = setFlags.get(position);
+            double top = Coach.work(s).top;
+            for (int i = 0; i < s.n; i++) h.sets.addView(setLine(s, i, top, flags[i]));
             return convertView;
         }
     }
 
-    /** "χαλαρό, μέτριο, στο όριο", each word in its colour; a dash for a set that was not rated. */
-    private static CharSequence feelLine(Session s) {
-        SpannableStringBuilder sb = new SpannableStringBuilder();
-        for (int i = 0; i < s.n; i++) {
-            if (i > 0) sb.append(", ");
-            String word = s.feel[i] != 0 ? Fmt.feel(s.feel[i]) : "–";
-            int start = sb.length();
-            sb.append(word);
-            sb.setSpan(new ForegroundColorSpan(Theme.feel(s.feel[i])), start, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    private View setLine(Session s, int i, double top, int flags) {
+        boolean warm = Coach.isWarmUp(s.weight[i], top);
+        LinearLayout line = ui.row();
+        line.setPadding(0, ui.dp(4), 0, ui.dp(4));
+        TextView num = ui.figures(14, DIM, false);
+        num.setText(String.valueOf(i + 1));
+        line.addView(num, new LinearLayout.LayoutParams(ui.dp(22), ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView set = ui.figures(19, warm ? SOFT : TEXT, true);
+        set.setText(Ui.quiet(Fmt.load(s.weight[i]) + " × " + s.reps[i]));
+        line.addView(set, new LinearLayout.LayoutParams(ui.dp(118), ViewGroup.LayoutParams.WRAP_CONTENT));
+        int f = s.feel[i];
+        LinearLayout how = ui.row();
+        if (f != 0) {
+            View dot = new View(act);
+            dot.setBackground(ui.round(Theme.feel(f), 4));
+            LinearLayout.LayoutParams dl = ui.size(8, 8);
+            dl.rightMargin = ui.dp(8);
+            how.addView(dot, dl);
         }
-        return sb;
+        how.addView(ui.text(f != 0 ? Fmt.feel(f) : warm ? "ζέσταμα" : "", 14, f != 0 ? SOFT : DIM, false));
+        line.addView(how, Ui.fill());
+        if (flags != 0) {
+            line.addView(ui.icon(R.drawable.ic_trophy, MARK), ui.size(16, 16));
+            TextView pr = ui.text(Fmt.badges(flags), 13, MARK, true);
+            pr.setPadding(ui.dp(5), 0, 0, 0);
+            line.addView(pr);
+        }
+        return line;
     }
 
     private static final class Holder {
         TextView date;
         TextView score;
-        TextView sets;
-        TextView feel;
-        LinearLayout pr;
-        TextView prText;
+        LinearLayout sets;
     }
 }

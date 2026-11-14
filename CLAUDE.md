@@ -31,7 +31,7 @@ Hard constraints that follow from this toolchain:
 
 ### Shipping a new version
 
-1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 6 / 1.4).
+1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 7 / 1.4.1).
 2. `bash gym/build.sh`, then `cp gym/build/GymNotes.apk apk/GymNotes.apk`.
 3. Update `gym/README.md` (and screenshots if the UI changed).
 4. The user installs by downloading the APK onto the phone (send them `apk/GymNotes.apk`).

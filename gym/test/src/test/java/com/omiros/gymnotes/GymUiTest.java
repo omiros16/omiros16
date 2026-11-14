@@ -406,10 +406,20 @@ public class GymUiTest {
         ListView list = null;
         for (View v : all(screen(), new ArrayList<View>())) if (v instanceof ListView) list = (ListView) v;
         assertEquals("header + 4 sessions", 5, list.getAdapter().getCount());
-        assertTrue(dump(screen()), has(screen(), "χαλαρό, μέτριο, στο όριο"));
+        // Every session set by set: today's three sets with how they felt, the record on the set that made it.
+        assertEquals("in the stats and in the list:\n" + dump(screen()), 2, exact(screen(), "52.5 kg × 9"));
+        assertEquals(1, exact(screen(), "χαλαρό"));
+        assertEquals(1, exact(screen(), "μέτριο"));
+        assertEquals(1, exact(screen(), "στο όριο"));
+        assertEquals("one set made today's records", 1, exact(screen(), "PR βάρους, PR 1RM"));
         assertTrue(has(screen(), "Διακύμανση μέρας"));
         assertTrue(has(screen(), "Δευτέρα – Πλάτη, Παρασκευή – Full body"));
         shot("history");
+        list.setSelection(1);
+        idle();
+        shot("history-list");
+        list.setSelection(0);
+        idle();
         described(screen(), "Μενού").get(0).performClick();
         idle();
         pickMenu("Εύρος reps & βήμα κιλών");
