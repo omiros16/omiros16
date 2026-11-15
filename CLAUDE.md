@@ -16,7 +16,7 @@ User-facing docs: `gym/README.md` (Greek, with screenshots in `gym/docs/`), root
 
 `gym/build.sh` downloads everything from Maven Central into `.tools/` (gitignored): aapt2 (from the
 apktool jar), `android-all` (Robolectric's android.jar, used only to compile), dalvik-dx and apksig.
-Needs JDK 17+, python3, curl. Steps: aapt2 compile/link → `javac --release 8` → dx → `tools/package.py`
+Needs JDK 17+, python3, curl, sha256sum. Each downloaded tool is checked against the SHA-256 in the script. Steps: aapt2 compile/link → `javac --release 8` → dx → `tools/package.py`
 → `tools/Sign.java` (v2 signature).
 
 Hard constraints that follow from this toolchain:
@@ -31,7 +31,7 @@ Hard constraints that follow from this toolchain:
 
 ### Shipping a new version
 
-1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 7 / 1.4.1).
+1. Bump `VERSION_CODE` and `VERSION_NAME` in `gym/build.sh` (currently 8 / 1.4.2).
 2. `bash gym/build.sh`, then `cp gym/build/GymNotes.apk apk/GymNotes.apk`.
 3. Update `gym/README.md` (and screenshots if the UI changed).
 4. The user installs by downloading the APK onto the phone (send them `apk/GymNotes.apk`).
@@ -40,7 +40,10 @@ Hard constraints that follow from this toolchain:
 
 Single `MainActivity` with a hand-rolled back stack of `Screen`s. Each screen has a `key()`
 (`home:TAB`, `preset:ID`, `log:EXERCISE_ID:DAY`, `history:ID`) so the stack is restored after process
-death (`Screen.restore`). Days are `LocalDate.toEpochDay()` longs everywhere.
+death (`Screen.restore`). Days are `LocalDate.toEpochDay()` longs everywhere; "today" comes from
+`Fmt.today()` (its `Fmt.clock` is what tests move). An `ExerciseScreen` opened for today follows the
+calendar if left open (`key` ends in `:today`): it moves to the new day, except a workout still going
+after midnight (until 04:00), so a finished session is never written over.
 
 | File | Role |
 |---|---|
@@ -124,8 +127,8 @@ adjust tests with the change.
   Checks invariants (no unsafe jump, never up then straight back down, a bad day almost never
   lowers the weight, targets track real strength, ratings help). It writes `target/coach-sim.txt`;
   read it before and after any change to `Coach` and keep the README's "Επαλήθευση" numbers in sync.
-- `GymUiTest`: the real Activity: a whole workout, export / import, upgrades from DB versions 1-3,
-  two years of data. `gym/test.sh -Dshots=<folder>` also writes the screenshots used in `gym/docs`.
+- `GymUiTest`: the real Activity: a whole workout, export / import (merge keeps settings the file
+  lacks), the log screen across days and past midnight, upgrades from DB versions 1-3, two years of data. `gym/test.sh -Dshots=<folder>` also writes the screenshots used in `gym/docs`.
 
 How it works: the pom adds `gym/app/src/main/java` and `gym/build/gen` (R.java) as sources and uses
 `.tools/android-all.jar`; `test_config.properties` points Robolectric at `gym/build/base.apk`.

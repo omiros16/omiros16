@@ -37,8 +37,13 @@ import java.util.List;
 final class ExerciseScreen extends Screen {
     private static final int SAVE_DELAY_MS = 500;
 
+    /** A workout still going after midnight stays on the day it started until this hour. */
+    private static final int LATE_NIGHT_UNTIL = 4;
+
     private final long exerciseId;
     private long day;
+    /** Opened for today, not for a chosen date: it follows the calendar when the app is left open. */
+    private boolean forToday;
     private Strength.Bests before = new Strength.Bests();
     private Session prev;
     private final List<Row> rows = new ArrayList<>();
@@ -145,14 +150,30 @@ final class ExerciseScreen extends Screen {
     }
 
     ExerciseScreen(MainActivity act, long exerciseId, long day) {
+        this(act, exerciseId, day, day == Fmt.today());
+    }
+
+    ExerciseScreen(MainActivity act, long exerciseId, long day, boolean forToday) {
         super(act);
         this.exerciseId = exerciseId;
-        this.day = day;
+        this.forToday = forToday;
+        this.day = forToday ? follow(day) : day;
     }
 
     @Override
     String key() {
-        return "log:" + exerciseId + ":" + day;
+        return "log:" + exerciseId + ":" + day + (forToday ? ":today" : "");
+    }
+
+    /**
+     * For a screen opened for today, the day it should log now: today, unless the sets of
+     * {@code from} are a workout still going after midnight (it is the day before, it is not yet
+     * {@link #LATE_NIGHT_UNTIL}, and sets were logged on it).
+     */
+    private long follow(long from) {
+        long today = Fmt.today();
+        boolean lateNight = from == today - 1 && Fmt.hour() < LATE_NIGHT_UNTIL && db.session(exerciseId, from).n > 0;
+        return lateNight ? from : today;
     }
 
     @Override
@@ -304,9 +325,25 @@ final class ExerciseScreen extends Screen {
         load();
     }
 
-    /** Coming back to the app keeps half-typed rows as they are. */
+    /**
+     * Coming back to the app keeps half-typed rows as they are. But a screen opened for today and
+     * left open moves on to the new day: the sets of the old day stay where they were logged and
+     * are never written over by the new workout.
+     */
     @Override
     void onResume() {
+        if (!forToday || day == Fmt.today()) return;
+        flush();
+        long now = follow(day);
+        if (now != day) {
+            day = now;
+            load();
+        } else {
+            // The same workout past midnight: still that day, now shown as yesterday, in yellow.
+            showDay(titleView.getText().toString());
+            showAdvice();
+            judge(null);
+        }
     }
 
     @Override
@@ -331,11 +368,7 @@ final class ExerciseScreen extends Screen {
             return;
         }
         long today = Fmt.today();
-        setTitle(ex.name, Fmt.dayWithDate(day, today));
-        // Another day than today stands out, so sets are not logged on the wrong day by accident.
-        subtitleView.setTextColor(day == today ? DIM : MARK);
-        subtitleView.setCompoundDrawableTintList(ColorStateList.valueOf(day == today ? DIM : MARK));
-        subtitleView.setContentDescription(Fmt.dayWithDate(day, today) + ", αλλαγή μέρας");
+        showDay(ex.name);
 
         before = db.bestsBefore(exerciseId, day);
         long prevDay = db.lastDayBefore(exerciseId, day);
@@ -379,6 +412,15 @@ final class ExerciseScreen extends Screen {
         if (rows.isEmpty()) addRow("", "", false, 0);
         propagating = false;
         judge(null);
+    }
+
+    /** The title and the day being logged; another day than today stands out, in yellow. */
+    private void showDay(String name) {
+        long today = Fmt.today();
+        setTitle(name, Fmt.dayWithDate(day, today));
+        subtitleView.setTextColor(day == today ? DIM : MARK);
+        subtitleView.setCompoundDrawableTintList(ColorStateList.valueOf(day == today ? DIM : MARK));
+        subtitleView.setContentDescription(Fmt.dayWithDate(day, today) + ", αλλαγή μέρας");
     }
 
     /** The target for this day, from the sessions before it; also sets the −/+ weight step. */
@@ -857,6 +899,7 @@ final class ExerciseScreen extends Screen {
                 if (picked == day) return;
                 flush();
                 day = Math.min(picked, Fmt.today());
+                forToday = day == Fmt.today();
                 load();
             }
         }, d.getYear(), d.getMonthValue() - 1, d.getDayOfMonth());

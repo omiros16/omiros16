@@ -68,7 +68,8 @@ abstract class Screen {
                     return act.db.presetName(presetId) == null ? null : new PresetScreen(act, presetId);
                 case "log":
                     long exId = Long.parseLong(p[1]);
-                    return act.db.exercise(exId) == null ? null : new ExerciseScreen(act, exId, Long.parseLong(p[2]));
+                    if (act.db.exercise(exId) == null) return null;
+                    return new ExerciseScreen(act, exId, Long.parseLong(p[2]), p.length > 3 && p[3].equals("today"));
                 case "history":
                     long hId = Long.parseLong(p[1]);
                     return act.db.exercise(hId) == null ? null : new HistoryScreen(act, hId);

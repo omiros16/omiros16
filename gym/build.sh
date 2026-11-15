@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Builds the signed Gym Notes APK without the Android SDK or Gradle, with the same Maven Central
 # toolchain as ../build.sh (aapt2 from apktool, android-all for compiling, dx, apksig).
-# Requires: JDK 17+, python3, curl.  Output: gym/build/GymNotes.apk
+# Requires: JDK 17+, python3, curl, sha256sum.  Output: gym/build/GymNotes.apk
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION_CODE=7
-VERSION_NAME=1.4.1
+VERSION_CODE=8
+VERSION_NAME=1.4.2
 MIN_SDK=26
 TARGET_SDK=34
 
@@ -16,11 +16,23 @@ B=gym/build
 SRC=gym/app/src/main
 mkdir -p "$T"
 
-fetch() { [ -f "$T/$2" ] || curl -fsSL --retry 5 --retry-all-errors -o "$T/$2" "$M/$1"; }
-fetch org/apktool/apktool-cli/3.0.3/apktool-cli-3.0.3.jar apktool.jar
-fetch org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar android-all.jar
-fetch com/jakewharton/android/repackaged/dalvik-dx/16.0.1/dalvik-dx-16.0.1.jar dx.jar
-fetch com/android/tools/build/apksig/2.3.0/apksig-2.3.0.jar apksig.jar
+# Each tool is checked against its SHA-256, so a changed or half-downloaded file never gets into the build.
+fetch() {
+    [ -f "$T/$2" ] || curl -fsSL --retry 5 --retry-all-errors -o "$T/$2" "$M/$1"
+    if ! echo "$3  $T/$2" | sha256sum -c --status; then
+        rm -f "$T/$2"
+        echo "error: $2 does not match its checksum (deleted; run again to download it anew)" >&2
+        exit 1
+    fi
+}
+fetch org/apktool/apktool-cli/3.0.3/apktool-cli-3.0.3.jar apktool.jar \
+    29fc610eed9dd349e75d40fd5af02538e0118b08d56a61ef6f53f8256adadc9a
+fetch org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar android-all.jar \
+    6be2218c6a53fe3c57bc22ebdc723edcb7270a8a6f187545708aa5c0ed813977
+fetch com/jakewharton/android/repackaged/dalvik-dx/16.0.1/dalvik-dx-16.0.1.jar dx.jar \
+    1e4b645628e3bdb097b5331d669e177ef235a551582a8c646dbe36865e541907
+fetch com/android/tools/build/apksig/2.3.0/apksig-2.3.0.jar apksig.jar \
+    9637078c0016244e4be0941836295365a7e2e5b164c59cb7885783c40460bfee
 if [ ! -x "$T/prebuilt/linux/aapt2" ]; then
     (cd "$T" && unzip -oq apktool.jar prebuilt/linux/aapt2 prebuilt/android-framework.jar && chmod +x prebuilt/linux/aapt2)
 fi

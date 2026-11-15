@@ -27,6 +27,7 @@ import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
@@ -43,6 +44,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -625,6 +630,160 @@ public class GymUiTest {
         assertEquals(3, r.sessions);
         assertEquals(1, r.presets);
         assertTrue("the preset's unknown exercise is created", a.db.findExercise("Squat") > 0);
+    }
+
+    // ---------------------------------------------------------------- the calendar moves on
+
+    @After
+    public void realClock() {
+        Fmt.clock = Clock.systemDefaultZone();
+    }
+
+    static void clock(LocalDateTime t) {
+        ZoneId zone = ZoneId.systemDefault();
+        Fmt.clock = Clock.fixed(t.atZone(zone).toInstant(), zone);
+    }
+
+    /** Ticks the first {@code n} sets on the screen that are not ticked yet. */
+    void tick(int n) {
+        for (int i = 0; i < n; i++) {
+            for (View v : described(screen(), "Έγινε")) {
+                if (!v.isSelected()) {
+                    v.performClick();
+                    idle();
+                    break;
+                }
+            }
+        }
+    }
+
+    int ticked() {
+        int n = 0;
+        for (View v : described(screen(), "Έγινε")) if (v.isSelected()) n++;
+        return n;
+    }
+
+    static final LocalDate MONDAY = LocalDate.of(2026, 11, 9);
+
+    /** Squat in a program, done a week before {@link #MONDAY}; the log screen opened for today. */
+    ActivityController<MainActivity> squatToday() {
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
+        a = c.get();
+        long preset = a.db.addPreset("Legs");
+        long squat = a.db.addExercise("Squat");
+        a.db.addToPreset(preset, squat);
+        a.db.saveSession(squat, session(MONDAY.toEpochDay() - 7, 80, 10, 9, 8));
+        a.push(new ExerciseScreen(a, squat, Fmt.today()));
+        idle();
+        return c;
+    }
+
+    @Test
+    public void aScreenLeftOpenMovesOnToTheNewDay() {
+        clock(MONDAY.atTime(18, 0));
+        ActivityController<MainActivity> c = squatToday();
+        long squat = a.db.findExercise("Squat");
+        long mon = MONDAY.toEpochDay();
+        assertTrue(dump(screen()), has(screen(), "Σήμερα, Δευ 9/11"));
+        tick(3);
+        assertEquals(3, a.db.session(squat, mon).n);
+
+        // Thursday: the app comes back with the same screen still open.
+        c.pause();
+        clock(MONDAY.plusDays(3).atTime(18, 0));
+        c.resume();
+        idle();
+        assertTrue(dump(screen()), has(screen(), "Σήμερα, Πέμ 12/11"));
+        assertEquals("Thursday starts with nothing ticked", 0, ticked());
+        tick(1);
+        assertEquals(1, a.db.session(squat, mon + 3).n);
+        assertEquals("Monday's workout is untouched", "80 kg × 11, 10, 9", Fmt.sets(a.db.session(squat, mon)));
+
+        // After the system closed the app, it opens on the new day too.
+        Bundle state = new Bundle();
+        c.pause().saveInstanceState(state);
+        a.db.close();
+        clock(MONDAY.plusDays(4).atTime(9, 0));
+        a = Robolectric.buildActivity(MainActivity.class).setup(state).get();
+        idle();
+        assertTrue(a.top() instanceof ExerciseScreen);
+        assertTrue(dump(screen()), has(screen(), "Σήμερα, Παρ 13/11"));
+        assertEquals(0, ticked());
+    }
+
+    @Test
+    public void aWorkoutPastMidnightStaysOnItsDay() {
+        clock(MONDAY.atTime(23, 40));
+        ActivityController<MainActivity> c = squatToday();
+        long squat = a.db.findExercise("Squat");
+        long mon = MONDAY.toEpochDay();
+        tick(1);
+
+        // 00:20: still Monday's workout, now shown as yesterday.
+        c.pause();
+        clock(MONDAY.plusDays(1).atTime(0, 20));
+        c.resume();
+        idle();
+        assertTrue(dump(screen()), has(screen(), "Χθες, Δευ 9/11"));
+        assertTrue(has(screen(), "Στόχος γι' αυτή τη μέρα"));
+        assertEquals(1, ticked());
+        tick(2);
+        assertEquals(3, a.db.session(squat, mon).n);
+        assertEquals(0, a.db.session(squat, mon + 1).n);
+
+        // Next evening it is a new workout.
+        c.pause();
+        clock(MONDAY.plusDays(1).atTime(18, 0));
+        c.resume();
+        idle();
+        assertTrue(dump(screen()), has(screen(), "Σήμερα, Τρί 10/11"));
+        assertEquals(0, ticked());
+    }
+
+    @Test
+    public void aScreenOpenedForAnotherDayStaysOnIt() {
+        clock(MONDAY.atTime(18, 0));
+        ActivityController<MainActivity> c = Robolectric.buildActivity(MainActivity.class).setup();
+        a = c.get();
+        long squat = a.db.addExercise("Squat");
+        long friday = MONDAY.toEpochDay() - 3;
+        a.push(new ExerciseScreen(a, squat, friday));
+        idle();
+        c.pause();
+        clock(MONDAY.plusDays(2).atTime(18, 0));
+        c.resume();
+        idle();
+        assertTrue(dump(screen()), has(screen(), "Παρ 6/11"));
+    }
+
+    @Test
+    public void mergingKeepsTheSettingsTheFileDoesNotHave() {
+        start();
+        Db db = a.db;
+        long curl = db.addExercise("Bicep curl");
+        db.setSettings(curl, 10, 15, 2);
+
+        Backup.Data range = new Backup.Data();
+        Backup.Ex ex = new Backup.Ex();
+        ex.name = "bicep CURL";
+        ex.low = 8;
+        ex.high = 12;
+        range.exercises.add(ex);
+        db.importData(range, false);
+        Coach.Settings s = db.settings(curl);
+        assertEquals(8, s.low);
+        assertEquals(12, s.high);
+        assertEquals("the file has no step: yours stays", 2, s.step, 1e-9);
+
+        Backup.Data step = new Backup.Data();
+        Backup.Ex ex2 = new Backup.Ex();
+        ex2.name = "Bicep curl";
+        ex2.step = 1.25;
+        step.exercises.add(ex2);
+        db.importData(step, false);
+        s = db.settings(curl);
+        assertEquals("the file has no range: yours stays", 8, s.low);
+        assertEquals(1.25, s.step, 1e-9);
     }
 
     // ---------------------------------------------------------------- older databases

@@ -647,7 +647,14 @@ final class Db extends SQLiteOpenHelper {
             for (Backup.Ex ex : data.exercises) {
                 long id = addExercise(db, ex.name);
                 ids.put(key(ex.name), id);
-                if (ex.low > 0 || ex.step > 0) setSettings(db, id, ex.low, ex.high, ex.step);
+                // Only the settings the file has: on a merge the others stay as they are.
+                ContentValues settings = new ContentValues();
+                if (ex.low > 0) {
+                    settings.put("rep_low", ex.low);
+                    settings.put("rep_high", ex.high);
+                }
+                if (ex.step > 0) settings.put("step", Strength.centi(ex.step) / 100.0);
+                if (settings.size() > 0) db.update("exercise", settings, "id = ?", args(id));
                 for (Session s : ex.log) replaceSession(db, ins, id, s);
                 refreshStats(db, id);
                 r.exercises++;

@@ -1,6 +1,8 @@
 package com.omiros.gymnotes;
 
+import java.time.Clock;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
@@ -14,8 +16,15 @@ final class Fmt {
     private Fmt() {
     }
 
+    /** The clock "today" comes from; tests set it to move between days. */
+    static Clock clock = Clock.systemDefaultZone();
+
     static long today() {
-        return LocalDate.now().toEpochDay();
+        return LocalDate.now(clock).toEpochDay();
+    }
+
+    static int hour() {
+        return LocalTime.now(clock).getHour();
     }
 
     /** 50 -> "50", 52.5 -> "52.5", 1.25 -> "1.25". */
