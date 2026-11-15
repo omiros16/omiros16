@@ -1,8 +1,9 @@
 # Εφαρμογές Android
 
-- **[Gym Notes](gym/README.md)**: σημειωματάριο γυμναστηρίου με προγράμματα, sets / κιλά / reps και
-  πραγματικά PR. APK: [`apk/GymNotes.apk`](apk/GymNotes.apk)
 - **Timetable** (παρακάτω): ημερήσιο πρόγραμμα σε κουτάκια των 15 λεπτών. APK: [`apk/Timetable.apk`](apk/Timetable.apk)
+
+Το **Gym Notes** έχει πλέον το δικό του ιδιωτικό repo:
+[omiros16/gym-notes](https://github.com/omiros16/gym-notes).
 
 ## Timetable
 
