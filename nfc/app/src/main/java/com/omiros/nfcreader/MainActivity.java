@@ -6,6 +6,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
@@ -71,7 +72,12 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(8), dp(10), dp(8), dp(10));
-        backButton = textButton("‹", v -> onBackPressed());
+        backButton = textButton("‹", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                onBackPressed();
+            }
+        });
         backButton.setTextSize(28);
         backButton.setPadding(dp(12), 0, dp(12), dp(4));
         bar.addView(backButton);
@@ -142,24 +148,27 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         byte[] toWrite = pendingWrite;
         if (toWrite != null) {
             String err = write(tag, toWrite);
-            runOnUiThread(() -> {
-                if (err == null) {
-                    pendingWrite = null;
-                    toast(t("Written to the tag ✓", "Γράφτηκε στην ετικέτα ✓"));
-                    render();
-                } else {
-                    toast(err);
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (err == null) {
+                        pendingWrite = null;
+                        toast(t("Written to the tag ✓", "Γράφτηκε στην ετικέτα ✓"));
+                        render();
+                    } else {
+                        toast(err);
+                    }
                 }
             });
             return;
         }
         Scan s = TagReader.read(tag);
-        runOnUiThread(() -> {
-            history.add(s);
-            current = s;
-            showingHistory = false;
-            render();
-            scroll.scrollTo(0, 0);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                history.add(s);
+                open(s);
+            }
         });
     }
 
@@ -211,10 +220,13 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         title.setText(current == null ? getString(R.string.app_name) : current.type);
         backButton.setVisibility(current != null || pendingWrite != null ? View.VISIBLE : View.GONE);
         topButton.setText(t("History", "Ιστορικό"));
-        topButton.setOnClickListener(v -> {
-            showingHistory = true;
-            render();
-            scroll.scrollTo(0, 0);
+        topButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showingHistory = true;
+                render();
+                scroll.scrollTo(0, 0);
+            }
         });
         topButton.setVisibility(View.VISIBLE);
 
@@ -226,11 +238,14 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         if (!nfc.isEnabled()) {
             emptyState(t("NFC is off", "Το NFC είναι κλειστό"),
                     t("Turn on NFC to read cards.", "Άνοιξε το NFC για να διαβάζεις κάρτες."));
-            View b = button(t("Turn on NFC", "Άνοιγμα NFC"), true, v -> {
-                try {
-                    startActivity(new Intent(Settings.ACTION_NFC_SETTINGS));
-                } catch (Exception e) {
-                    startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
+            View b = button(t("Turn on NFC", "Άνοιγμα NFC"), true, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_NFC_SETTINGS));
+                    } catch (Exception e) {
+                        startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
+                    }
                 }
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
@@ -288,25 +303,33 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         uid.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         uid.setTextIsSelectable(true);
         uid.setPadding(0, dp(6), 0, dp(4));
-        uid.setOnClickListener(v -> copy(s.uid.replace(":", ""), "UID"));
+        uid.setOnClickListener(copier(s.uid.replace(":", ""), "UID"));
         card.addView(uid);
         card.addView(text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(new Date(s.time)), 13, DIM));
 
         LinearLayout row = new LinearLayout(this);
         row.setPadding(0, dp(14), 0, 0);
-        row.addView(button(t("Copy UID", "Αντιγραφή UID"), true, v -> copy(s.uid.replace(":", ""), "UID")), weight());
+        row.addView(button(t("Copy UID", "Αντιγραφή UID"), true, copier(s.uid.replace(":", ""), "UID")), weight());
         row.addView(space(10));
-        row.addView(button(t("Copy all", "Αντιγραφή όλων"), false, v -> copy(s.fullText(), t("All data", "Όλα τα δεδομένα"))), weight());
+        row.addView(button(t("Copy all", "Αντιγραφή όλων"), false, copier(s.fullText(), t("All data", "Όλα τα δεδομένα"))), weight());
         card.addView(row);
 
         LinearLayout row2 = new LinearLayout(this);
         row2.setPadding(0, dp(10), 0, 0);
-        row2.addView(button(t("Share", "Κοινοποίηση"), false, v -> share(s)), weight());
+        row2.addView(button(t("Share", "Κοινοποίηση"), false, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                share(s);
+            }
+        }), weight());
         if (s.ndef != null) {
             row2.addView(space(10));
-            row2.addView(button(t("Write to tag", "Εγγραφή σε ετικέτα"), false, v -> {
-                pendingWrite = s.ndef;
-                render();
+            row2.addView(button(t("Write to tag", "Εγγραφή σε ετικέτα"), false, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    pendingWrite = s.ndef;
+                    render();
+                }
             }), weight());
         }
         card.addView(row2);
@@ -328,7 +351,7 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         h.setTypeface(Typeface.DEFAULT_BOLD);
         h.setLetterSpacing(0.06f);
         head.addView(h, new LinearLayout.LayoutParams(0, -2, 1));
-        head.addView(textButton(t("Copy", "Αντιγραφή"), v -> copy(sec.body, sec.title)));
+        head.addView(textButton(t("Copy", "Αντιγραφή"), copier(sec.body, sec.title)));
         content.addView(head);
 
         TextView body = text(sec.body, 13, TEXT);
@@ -355,14 +378,12 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
         backButton.setVisibility(View.VISIBLE);
         topButton.setText(t("Clear", "Διαγραφή"));
         topButton.setVisibility(history.items.isEmpty() ? View.GONE : View.VISIBLE);
-        topButton.setOnClickListener(v -> new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setMessage(t("Delete all scans?", "Διαγραφή όλων των σαρώσεων;"))
-                .setPositiveButton(t("Delete", "Διαγραφή"), (d, w) -> {
-                    history.clear();
-                    render();
-                })
-                .setNegativeButton(t("Cancel", "Άκυρο"), null)
-                .show());
+        topButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirm(t("Delete all scans?", "Διαγραφή όλων των σαρώσεων;"), null);
+            }
+        });
 
         if (history.items.isEmpty()) {
             emptyState(t("No scans yet", "Καμία σάρωση ακόμα"), t("Cards you read appear here.", "Οι κάρτες που διαβάζεις εμφανίζονται εδώ."));
@@ -383,23 +404,18 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
             u.setEllipsize(TextUtils.TruncateAt.END);
             item.addView(u);
             item.addView(text(s.type + " · " + fmt.format(new Date(s.time)), 13, DIM));
-            item.setOnClickListener(v -> {
-                current = s;
-                showingHistory = false;
-                render();
-                scroll.scrollTo(0, 0);
+            item.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    open(s);
+                }
             });
-            item.setOnLongClickListener(v -> {
-                new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                        .setMessage(t("Delete this scan?", "Διαγραφή αυτής της σάρωσης;"))
-                        .setPositiveButton(t("Delete", "Διαγραφή"), (d, w) -> {
-                            history.remove(s);
-                            if (current == s) current = null;
-                            render();
-                        })
-                        .setNegativeButton(t("Cancel", "Άκυρο"), null)
-                        .show();
-                return true;
+            item.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    confirm(t("Delete this scan?", "Διαγραφή αυτής της σάρωσης;"), s);
+                    return true;
+                }
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
             lp.bottomMargin = dp(8);
@@ -408,6 +424,42 @@ public class MainActivity extends Activity implements NfcAdapter.ReaderCallback 
     }
 
     // ---------------------------------------------------------------- actions
+
+    private void open(Scan s) {
+        current = s;
+        showingHistory = false;
+        render();
+        scroll.scrollTo(0, 0);
+    }
+
+    /** Asks before deleting one scan, or all of them when {@code s} is null. */
+    private void confirm(String question, final Scan s) {
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setMessage(question)
+                .setPositiveButton(t("Delete", "Διαγραφή"), new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        if (s == null) {
+                            history.clear();
+                        } else {
+                            history.remove(s);
+                            if (current == s) current = null;
+                        }
+                        render();
+                    }
+                })
+                .setNegativeButton(t("Cancel", "Άκυρο"), null)
+                .show();
+    }
+
+    private View.OnClickListener copier(final String text, final String what) {
+        return new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                copy(text, what);
+            }
+        };
+    }
 
     private void copy(String text, String what) {
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
